@@ -2,7 +2,6 @@ package org.firstinspires.ftc.teamcode.mech.Auto;
 
 import com.acmerobotics.dashboard.telemetry.TelemetryPacket;
 import com.acmerobotics.roadrunner.Action;
-import com.acmerobotics.roadrunner.ParallelAction;
 import com.acmerobotics.roadrunner.Pose2d;
 import com.acmerobotics.roadrunner.SequentialAction;
 import com.acmerobotics.roadrunner.TranslationalVelConstraint;
@@ -16,13 +15,21 @@ import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.util.ElapsedTime;
+import org.firstinspires.ftc.teamcode.mech.control.CustomPIDF;
+import org.firstinspires.ftc.teamcode.mech.control.TurretController;
+import com.qualcomm.hardware.limelightvision.LLResult;
+import com.qualcomm.hardware.limelightvision.LLResultTypes;
+import com.qualcomm.hardware.limelightvision.Limelight3A;
+import org.firstinspires.ftc.robotcore.external.navigation.Pose3D;
+
+import java.util.List;
 
 @Autonomous(name = "Left Launch Auto")
 public class LeftLaunchAuto extends LinearOpMode {
     private static final class Config {
-        // Spindexer positions
-        static final double[] SPINDEX_INTAKE  = {0.00, 0.38, 0.79};
-        static final double[] SPINDEX_OUTTAKE = {0.19, 0.59, 0.99};
+        // Spindexer positions (disabled; robot has no spindexer)
+        // static final double[] SPINDEX_INTAKE  = {0.00, 0.38, 0.79};
+        // static final double[] SPINDEX_OUTTAKE = {0.19, 0.59, 0.99};
 
         // Ball layout
         static final double BALL_SPACING = 6.0;
@@ -34,9 +41,6 @@ public class LeftLaunchAuto extends LinearOpMode {
         static final double MID_ROW_Y   = -19;
         static final double CLOSE_ROW_Y = -43;
 
-        // Wait before some strafes
-        static final double BALL_WAIT_SEC = 0.5;
-
         // Motion constraint
         static final double MOTION_VEL = 70.0;
         static final double COLLECT_VEL = 30.0;
@@ -46,14 +50,15 @@ public class LeftLaunchAuto extends LinearOpMode {
         static final Pose2d SHOOT_POSE  = new Pose2d(-36, 36, Math.toRadians(135));
         static final double COLLECT_HEADING_RAD = Math.toRadians(180);
 
-        // Intake timing
-        static final double INTAKE_RUN_SEC = 3.0;
-
         // Shooter timing
         static final double LAUNCHER_FIRST_SPINUP_SEC = 1.5;
         static final double LAUNCHER_SPINUP_SEC = 0.7;
         static final double FIRE_WINDOW_SEC  = 0.7;
          static final double LAUNCHER_TICKS_PER_REV = 28.0;
+        static final double LAUNCH_kP = 0.00025;
+        static final double LAUNCH_kI = 0.0000008;
+        static final double LAUNCH_kD = 0.00001;
+        static final double LAUNCH_kF = -1.0; // -1 => auto-compute from motor max speed
         // target RPMs (tune these)
          static final double TARGET_RPM_FIRST = 1000.0; // example, tune to match desired shot power
          static final double TARGET_RPM_NEXT  = 150.0; // often same as first, tune as needed
@@ -85,20 +90,49 @@ public class LeftLaunchAuto extends LinearOpMode {
     }
     private static final class RobotHW {
         final CRServo bottomFlywheel, topFlywheel;
-        final Servo spindexer;
+        // final Servo spindexer; // disabled
         final DcMotor backIntake, frontIntake;
         final DcMotorEx launcher;
+        final CRServo turretYaw;
+        final Servo turretPitch;
+        final TurretController turret;
+        final Limelight3A limelight;
+        final CustomPIDF launcherPIDF;
+        final ElapsedTime launcherLoopTimer = new ElapsedTime();
+        final double launcherTicksPerRev;
+        double launcherTargetTicksPerSec = 0.0;
+        boolean launcherControlEnabled = false;
 
         RobotHW(LinearOpMode opMode) {
             backIntake = opMode.hardwareMap.get(DcMotor.class, "backIntake");
             frontIntake = opMode.hardwareMap.get(DcMotor.class, "frontIntake");
             launcher = opMode.hardwareMap.get(DcMotorEx.class, "launcher");
-            launcher.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+            launcher.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+            launcher.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+            launcher.setZeroPowerBehavior(DcMotorEx.ZeroPowerBehavior.FLOAT);
 
 
             bottomFlywheel = opMode.hardwareMap.get(CRServo.class, "bottomFlywheel");
             topFlywheel = opMode.hardwareMap.get(CRServo.class, "topFlywheel");
-            spindexer = opMode.hardwareMap.get(Servo.class, "spindexer");
+            // spindexer = opMode.hardwareMap.get(Servo.class, "spindexer");
+
+            turretYaw = opMode.hardwareMap.get(CRServo.class, "turretYaw");
+            turretPitch = opMode.hardwareMap.get(Servo.class, "turretPitch");
+            turret = new TurretController(turretYaw, turretPitch);
+            limelight = opMode.hardwareMap.get(Limelight3A.class, "limelight");
+            limelight.setPollRateHz(100);
+            limelight.start();
+            limelight.pipelineSwitch(0);
+
+            double ticksPerRev = launcher.getMotorType().getTicksPerRev();
+            launcherTicksPerRev = (ticksPerRev > 0.0) ? ticksPerRev : Config.LAUNCHER_TICKS_PER_REV;
+            double maxRpm = launcher.getMotorType().getMaxRPM();
+            double maxTicksPerSec = Math.max(1.0, (maxRpm * launcherTicksPerRev) / 60.0);
+            double kF = (Config.LAUNCH_kF > 0.0) ? Config.LAUNCH_kF : (1.0 / maxTicksPerSec);
+            launcherPIDF = new CustomPIDF(Config.LAUNCH_kP, Config.LAUNCH_kI, Config.LAUNCH_kD, kF);
+            launcherPIDF.iMax = 0.35;
+            launcherPIDF.reset();
+            launcherLoopTimer.reset();
         }
 
         void setIntakePower(double pwr) {
@@ -117,6 +151,29 @@ public class LeftLaunchAuto extends LinearOpMode {
             topFlywheel.setDirection(DcMotorSimple.Direction.REVERSE);
             bottomFlywheel.setPower(1);
             topFlywheel.setPower(1);
+        }
+
+        void setLauncherRPM(double rpm) {
+            launcherTargetTicksPerSec = rpm * launcherTicksPerRev / 60.0;
+            launcherControlEnabled = (rpm > 0.0);
+            launcherPIDF.reset();
+            launcherLoopTimer.reset();
+        }
+
+        void updateLauncherPIDF() {
+            if (!launcherControlEnabled) return;
+            double dt = launcherLoopTimer.seconds();
+            launcherLoopTimer.reset();
+            if (dt <= 1e-6) dt = 1e-3;
+            double measured = launcher.getVelocity();
+            double power = launcherPIDF.update(launcherTargetTicksPerSec, measured, dt);
+            launcher.setPower(power);
+        }
+
+        void stopLauncherControl() {
+            launcherControlEnabled = false;
+            launcherTargetTicksPerSec = 0.0;
+            launcher.setPower(0.0);
         }
     }
 
@@ -190,9 +247,9 @@ public class LeftLaunchAuto extends LinearOpMode {
         // auto chain
         Action autonomousChain = new SequentialAction(
                 toShootInitially,
-                shootThreeBalls(hw)
+                shootThreeBalls(hw),
 
-                /*toFarRowStart,
+                toFarRowStart,
                 farCollect[0], farCollect[1], farCollect[2],
                 farEndToShoot,
                 shootThreeBalls(hw),
@@ -205,13 +262,13 @@ public class LeftLaunchAuto extends LinearOpMode {
                 toCloseRowStart,
                 closeCollect[0], closeCollect[1], closeCollect[2],
                 closeEndToShoot,
-                shootThreeBalls(hw)*/
+                shootThreeBalls(hw)
         );
 
         waitForStart();
         if (isStopRequested()) return;
 
-        Actions.runBlocking(autonomousChain);
+        Actions.runBlocking(withTurretLoop(autonomousChain, hw));
     }
     private static Vector2d[] makeRowPoints(double rowY) {
         Vector2d[] pts = new Vector2d[4];
@@ -238,52 +295,85 @@ public class LeftLaunchAuto extends LinearOpMode {
             TranslationalVelConstraint vel
     ) {
         Action[] segments = new Action[3];
-
-        for (int seg = 0; seg < 3; seg++) {
-            Pose2d startPose = rowEnds[seg];
-            Vector2d target = rowPts[seg + 1];
-
-            // Build drive segment with optional wait
-            com.acmerobotics.roadrunner.TrajectoryActionBuilder builder = drive.actionBuilder(startPose);
-            if (waitBeforeSegment[seg]) {
-                builder = builder.waitSeconds(Config.BALL_WAIT_SEC);
-            }
-            Action driveSeg = builder
-                    .strafeToLinearHeading(target, Config.COLLECT_HEADING_RAD, vel)
-                    .build();
-
-            // Build intake segment
-            Action intakeSeg = intakeForSlot(hw, seg);
-
-            segments[seg] = new ParallelAction(driveSeg, intakeSeg);
-        }
-
+        // Keep driving continuously across the entire row while intake stays on.
+        Action driveAll = drive.actionBuilder(rowEnds[0])
+                .strafeToLinearHeading(rowPts[1], Config.COLLECT_HEADING_RAD, vel)
+                .strafeToLinearHeading(rowPts[2], Config.COLLECT_HEADING_RAD, vel)
+                .strafeToLinearHeading(rowPts[3], Config.COLLECT_HEADING_RAD, vel)
+                .build();
+        segments[0] = runIntakeWhileAction(hw, driveAll);
+        segments[1] = noOpAction();
+        segments[2] = noOpAction();
         return segments;
     }
-    private static Action intakeForSlot(RobotHW hw, int slotIndex) {
+
+    private static Action runIntakeWhileAction(RobotHW hw, Action driveAction) {
         return new Action() {
-            private boolean initialized = false;
-            private ElapsedTime timer;
+            private boolean started = false;
 
             @Override
             public boolean run(TelemetryPacket packet) {
-                if (!initialized) {
-                    hw.spindexer.setPosition(Config.SPINDEX_INTAKE[slotIndex]);
+                if (!started) {
+                    started = true;
                     hw.setIntakePower(1);
-                    timer = new ElapsedTime();
-                    initialized = true;
                 }
-
-                if (timer.seconds() < Config.INTAKE_RUN_SEC) {
+                if (driveAction.run(packet)) {
                     return true;
                 }
-
                 hw.setIntakePower(0);
                 return false;
             }
         };
     }
-    private enum Phase { START_BALL, SPINUP, FIRE, ADVANCE, DONE }
+
+    private static Action noOpAction() {
+        return packet -> false;
+    }
+    private enum Phase { START_BALL, AIM, SPINUP, FIRE, ADVANCE, DONE }
+
+    private static Action withTurretLoop(Action main, RobotHW hw) {
+        return packet -> {
+            updateTurretFromVision(hw);
+            return main.run(packet);
+        };
+    }
+
+    private static void updateTurretFromVision(RobotHW hw) {
+        if (hw.turret == null) return;
+
+        boolean tagSeen = false;
+        double yawErrDeg = 0.0;
+        double xIn = 0.0;
+        double yIn = 0.0;
+        double zIn = 0.0;
+
+        LLResult result = (hw.limelight != null) ? hw.limelight.getLatestResult() : null;
+        if (result != null && result.isValid()) {
+            List<LLResultTypes.FiducialResult> fiducials = result.getFiducialResults();
+            if (fiducials != null) {
+                for (LLResultTypes.FiducialResult f : fiducials) {
+                    int id = f.getFiducialId();
+                    if (id == 20 || id == 21 || id == 24) {
+                        yawErrDeg = f.getTargetXDegrees();
+                        Pose3D tagPoseRobot = f.getTargetPoseRobotSpace();
+                        if (tagPoseRobot != null) {
+                            double xM = tagPoseRobot.getPosition().x;
+                            double yM = tagPoseRobot.getPosition().y;
+                            double zM = tagPoseRobot.getPosition().z;
+                            xIn = xM * 39.3701;
+                            yIn = yM * 39.3701;
+                            zIn = zM * 39.3701;
+                        }
+                        tagSeen = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        hw.turret.updateVisionMeasurement(xIn, yIn, zIn, yawErrDeg, tagSeen);
+        hw.turret.update();
+    }
 
     private static Action shootThreeBalls(RobotHW hw) {
         return new Action() {
@@ -299,17 +389,25 @@ public class LeftLaunchAuto extends LinearOpMode {
             @Override
             public boolean run(TelemetryPacket packet) {
                 if (phaseTimer == null) resetTimer();
+                hw.updateLauncherPIDF();
 
                 switch (phase) {
 
                     case START_BALL: {
                         // Start launcher and set initial spindex position for this ball
                         hw.stopFlywheels();
-                        hw.launcher.setVelocity((ballIndex == 0) ? Config.TARGET_VEL_FIRST : Config.TARGET_VEL_NEXT);
-                        hw.spindexer.setPosition(Config.SPINDEX_OUTTAKE[ballIndex]);
+                        hw.setLauncherRPM((ballIndex == 0) ? Config.TARGET_RPM_FIRST : Config.TARGET_RPM_NEXT);
+                        // hw.spindexer.setPosition(Config.SPINDEX_OUTTAKE[ballIndex]);
 
-                        phase = Phase.SPINUP;
+                        phase = Phase.AIM;
                         resetTimer();
+                        return true;
+                    }
+                    case AIM: {
+                        if ((hw.turret != null && hw.turret.isAimed()) || phaseTimer.seconds() > 1.5) {
+                            phase = Phase.SPINUP;
+                            resetTimer();
+                        }
                         return true;
                     }
                     case SPINUP: {
@@ -331,7 +429,7 @@ public class LeftLaunchAuto extends LinearOpMode {
                         hw.startFlywheelsForShooting();
 
                         if (phaseTimer.seconds() < Config.FIRE_WINDOW_SEC) return true;
-                        hw.spindexer.setPosition(Config.SPINDEX_OUTTAKE[ballIndex]);
+                        // hw.spindexer.setPosition(Config.SPINDEX_OUTTAKE[ballIndex]);
                         phase = Phase.ADVANCE;
                         resetTimer();
                         return true;
@@ -353,8 +451,8 @@ public class LeftLaunchAuto extends LinearOpMode {
 
                     case DONE: {
                         hw.stopFlywheels();
-                        hw.launcher.setPower(0);
-                        hw.spindexer.setPosition(Config.SPINDEX_OUTTAKE[0]);
+                        hw.stopLauncherControl();
+                        // hw.spindexer.setPosition(Config.SPINDEX_OUTTAKE[0]);
                         return false;
                     }
                 }

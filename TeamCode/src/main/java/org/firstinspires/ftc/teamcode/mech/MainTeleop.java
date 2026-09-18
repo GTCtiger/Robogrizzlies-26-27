@@ -5,6 +5,7 @@ import com.qualcomm.hardware.rev.RevColorSensorV3;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.CRServo;
+import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
@@ -14,19 +15,16 @@ import com.qualcomm.robotcore.hardware.PIDFCoefficients;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
 import com.qualcomm.robotcore.util.Range;
 
+import com.qualcomm.hardware.limelightvision.LLResult;
+import com.qualcomm.hardware.limelightvision.LLResultTypes;
+import com.qualcomm.hardware.limelightvision.Limelight3A;
+import org.firstinspires.ftc.robotcore.external.navigation.Pose3D;
 
-import org.firstinspires.ftc.robotcore.external.hardware.camera.WebcamName;
 import org.firstinspires.ftc.teamcode.mech.Auto.PinpointLocalizer;
-import org.firstinspires.ftc.teamcode.mech.CV.AprilTagDetectionPipeline;
 import org.firstinspires.ftc.teamcode.mech.CV.ColorDetection;
 import org.firstinspires.ftc.teamcode.mech.movement.movement;
 import org.firstinspires.ftc.teamcode.mech.control.CustomPIDF;
 import org.firstinspires.ftc.teamcode.mech.control.TurretController;
-import org.openftc.apriltag.AprilTagDetection;
-import org.openftc.easyopencv.OpenCvCamera;
-import org.openftc.easyopencv.OpenCvCameraFactory;
-import org.openftc.easyopencv.OpenCvCameraRotation;
-import org.openftc.easyopencv.OpenCvInternalCamera;
 
 
 import java.util.ArrayList;
@@ -41,14 +39,9 @@ public class MainTeleop extends LinearOpMode {
     // Hardware maps
     private movement drive;
     private CRServo bottomFlywheel, topFlywheel;
-    // private Servo spindexer;  // SPINDEXER DISABLED
     private DcMotorEx backIntake, frontIntake, launcher;
 
-    // Spindexer positions
-    // private final double[] spindexerPosIntake  = {0.00, 0.38, 0.79};  // SPINDEXER DISABLED
-    // private final double[] spindexerPosOuttake = {0.19, 0.59, 0.99};  // SPINDEXER DISABLED
-
-    // Ball tracking
+    //z Ball tracking
     private final List<String> ballcols = new ArrayList<>();
     private final ColorDetection colorSensor = new ColorDetection();
     private int i = 0;
@@ -58,6 +51,7 @@ public class MainTeleop extends LinearOpMode {
 
     // Button tracking
     private boolean dLeftPrev = false, dRightPrev = false;
+    private boolean dUpPrev = false, dDownPrev = false;
     private boolean xPrev = false, yPrev = false, bPrev = false, aPrev = false;
 
     // Pattern selection
@@ -66,34 +60,27 @@ public class MainTeleop extends LinearOpMode {
     private String patternName = "random";
     private String stype = "none";
 
-    // Auto-index
-    private boolean autoIndexLockout = false;          // true = don't auto-move spindexer
-    private boolean autoIndexedSinceLastBall = false;  // true = auto moved since last ball was detected
-
     // Shooter states
-    private enum ShootState { IDLE, AIM, SET_SERVO, SPINUP, FIRE, RECOVER }
+    private enum ShootState { IDLE, START, SPINUP, FIRE, RECOVER }
     private ShootState shootState = ShootState.IDLE; //initial shootstate
 
     private final ElapsedTime shootTimer = new ElapsedTime();
-    // Single-shot robot (no spindexer / no multi-shot sequencing)
-    private int[] shotOrder = new int[] {0};
     private int shotIndex = 0;
 
     // Timing knobs (ms)
-    private static final long FIRST_SPINUP_MS = 3000;
+    private static final long FIRST_SPINUP_MS = 2000;
     private static final long NEXT_SPINUP_MS  = 700;
     private static final long FIRE_MS         = 1000;
-    private static final long RECOVER_MS      = 5000;
+    private static final long RECOVER_MS      = 1000;
     // Launcher encoder/velocity tuning
     private static final double LAUNCHER_TICKS_PER_REV = 28.0;
     // target RPMs (tune these)
-    private static final double TARGET_RPM_FIRST = 500.0;
-    private static final double TARGET_RPM_NEXT  = 600.0;
+    private static final double TARGET_RPM = 700.0;
 
     // Battery + launcher velocity compensation
     private static final double NOMINAL_VOLTAGE = 12.0;
     private PIDFCoefficients baseLauncherPIDF;
-    private double launcherTicksPerRev;
+    private double launcherTicksPerRev = 28;
 
     // "At speed" logic
     private final ElapsedTime rpmStableTimer = new ElapsedTime();
@@ -102,11 +89,7 @@ public class MainTeleop extends LinearOpMode {
 
     // Feeder behavior (CRServos that push ball into launcher)
     private static final double FEED_POWER = 1.0;       // tune (0.6–1.0)
-    private static final long FEED_MS = 500;
-
-    // computed velocity targets (ticks per second)
-    private final double TARGET_VEL_FIRST = TARGET_RPM_FIRST * LAUNCHER_TICKS_PER_REV / 60.0;
-    private final double TARGET_VEL_NEXT  = TARGET_RPM_NEXT  * LAUNCHER_TICKS_PER_REV / 60.0;
+    private static final long FEED_MS = 3000;
 
     // when this fraction of target is reached we consider it spun up
     private static final double VEL_THRESHOLD_FRAC = 0.90;
@@ -127,49 +110,97 @@ public class MainTeleop extends LinearOpMode {
 
     private CRServo turretYaw;
     private Servo turretPitch;
+    private AnalogInput turretYawEnc;
     private TurretController turret;
 
     private PinpointLocalizer localizer;
     private Pose2d robotPos;
 
     // tune values
-    private static double LAUNCH_kP = 0.00025;
-    private static double LAUNCH_kI = 0.0000008;
-    private static double LAUNCH_kD = 0.00001;
+    private static double LAUNCH_kP = 0.005;
+    private static double LAUNCH_kI = 0.00005;
+    private static double LAUNCH_kD = 0.00003;
 
     // kF will be computed from motor max speed at init, but you can override if you want:
     private static double LAUNCH_kF = -1.0; // -1 = auto compute
 
-    private AprilTagDetectionPipeline pipeline;
-    private OpenCvCamera camera;
+    // Limelight AprilTag detection
+    private Limelight3A limelight;
+
+    // TODO: Measure these offsets
+    private static final double LL_X_IN = 0.0;
+    private static final double LL_Y_IN = 8.0;
+    // Limelight yaw relative to robot forward (radians). Forward-facing = 0.
+    private static final double LL_YAW_RAD = 0.0;
+    // Limelight tx is typically +right. Robot frame here uses +left.
+    private static final double TX_TO_ROBOT_LEFT_SIGN = -1.0;
+    // Used only when pose range is unavailable for a detected tag.
+    private static final double DEFAULT_TAG_RANGE_IN = 48.0;
+    // Persistent offset from robot-forward frame to turret frame.
+    private static final double TURRET_YAW_FORWARD_OFFSET_DEG = 0;
+    // Start slightly lower so compensation is stronger (can be tuned live).
+    private static final double TURRET_YAW_ENC_DEG_PER_REV = 122.7272;
+
+    // Last seen tag position in field coordinates (inches)
+    private boolean hasLastTagField = false;
+    private double lastTagFieldX = 0.0;
+    private double lastTagFieldY = 0.0;
+
+
+// Last seen tag height in robot coordinates (inches). Used to keep pitch stable after tag loss.
+private boolean hasLastTagZ = false;
+private double lastTagRobotZIn = 0.0;
 
     // Helpers
     private static double deadzone(double v, double dz) {
         return (Math.abs(v) < dz) ? 0 : v;
     }
 
+
+    private static double angleWrapRad(double a) {
+        while (a > Math.PI) a -= 2.0 * Math.PI;
+        while (a < -Math.PI) a += 2.0 * Math.PI;
+        return a;
+    }
+
+    private static double angleWrapDeg(double a) {
+        while (a > 180.0) a -= 360.0;
+        while (a <= -180.0) a += 360.0;
+        return a;
+    }
+
+    static double calculateLauncherKF(double configuredKF, double maxTicksPerSec) {
+        return configuredKF > 0.0 ? configuredKF : (maxTicksPerSec > 0.0 ? 1.0 / maxTicksPerSec : 0.0);
+    }
+
+
     @Override
     public void runOpMode() {
         // Init
-        int cameraMonitorViewId = hardwareMap.appContext.getResources().getIdentifier("cameraMonitorViewId", "id", hardwareMap.appContext.getPackageName());
         drive = new movement(this, 0, 0, 0);
 
         bottomFlywheel = hardwareMap.get(CRServo.class, "bottomFlywheel");
         topFlywheel = hardwareMap.get(CRServo.class, "topFlywheel");
-        // spindexer = hardwareMap.get(Servo.class, "spindexer");  // SPINDEXER DISABLED
         launcher = hardwareMap.get(DcMotorEx.class, "launcher");
         backIntake = hardwareMap.get(DcMotorEx.class, "backIntake");
         frontIntake = hardwareMap.get(DcMotorEx.class, "frontIntake");
         turretYaw  = hardwareMap.get(CRServo.class, "turretYaw");
         turretPitch = hardwareMap.get(Servo.class, "turretPitch");
-        camera = OpenCvCameraFactory.getInstance().createWebcam(
-                hardwareMap.get(WebcamName.class, "webcam"), cameraMonitorViewId);
+        turretYawEnc = hardwareMap.get(AnalogInput.class, "turretYawEnc");
+
 
         launcher.setDirection(DcMotorEx.Direction.REVERSE);
 
         localizer = new PinpointLocalizer(hardwareMap, 0.00199746322, new Pose2d(0, 0, Math.toRadians(90)));
 
-        // turret = new TurretController(turretYaw, turretPitch);
+        turret = new TurretController(turretYaw, turretPitch, turretYawEnc);
+        turret.yawEncoderDegPerRev = TURRET_YAW_ENC_DEG_PER_REV;
+        turret.resetYawEstimate();
+        turret.useTxForYaw = true;
+        turret.txSign = 1.0;
+        turret.txFilterAlpha = 0.25;
+        turret.txDeadbandDeg = 0.5;
+        turret.yawRobotForwardOffsetDeg = angleWrapDeg(TURRET_YAW_FORWARD_OFFSET_DEG);
 
         // turret.setTargetRobotRelative(36, 10, 0);
 
@@ -191,27 +222,21 @@ public class MainTeleop extends LinearOpMode {
 
         telemetry.addLine("Ready");
         telemetry.update();
-        camera.openCameraDeviceAsync(new OpenCvCamera.AsyncCameraOpenListener() {
-            @Override
-            public void onOpened() {
-                camera.startStreaming(640, 480, OpenCvCameraRotation.UPRIGHT);
-            }
-            @Override
-            public void onError(int errorCode) {}
-        });
+
+        // Limelight init
+        limelight = hardwareMap.get(Limelight3A.class, "limelight");
+        limelight.setPollRateHz(100);
+        limelight.start();
+        limelight.pipelineSwitch(0); // pipeline index
 
         waitForStart();
-        pipeline = new AprilTagDetectionPipeline(telemetry);
-        camera.setPipeline(pipeline);
 
-        launcherTicksPerRev = launcher.getMotorType().getTicksPerRev();
         baseLauncherPIDF = launcher.getPIDFCoefficients(DcMotorEx.RunMode.RUN_USING_ENCODER);
 
         // Max ticks/sec = maxRPM * ticksPerRev / 60
         double maxRpm = launcher.getMotorType().getMaxRPM();
         double maxTicksPerSec = (maxRpm * launcherTicksPerRev) / 60.0;
-//keep all other constans zero while testing Kp but talk to gavin about kf intergration into thes system
-        double kF = 0;//(LAUNCH_kF > 0) ? LAUNCH_kF : (1.0 / maxTicksPerSec);
+        double kF = calculateLauncherKF(LAUNCH_kF, maxTicksPerSec);
 
         launcherPIDF = new CustomPIDF(LAUNCH_kP, LAUNCH_kI, LAUNCH_kD, kF);
         launcherPIDF.iMax = 0.35; // clamp integral contribution (power units)
@@ -233,12 +258,18 @@ public class MainTeleop extends LinearOpMode {
             // 2) Edge detection
             boolean dLeft = gamepad1.dpad_left;
             boolean dRight = gamepad1.dpad_right;
+            boolean dUp = gamepad1.dpad_up;
+            boolean dDown = gamepad1.dpad_down;
 
             boolean dLeftPressed  = dLeft  && !dLeftPrev;
             boolean dRightPressed = dRight && !dRightPrev;
+            boolean dUpPressed = dUp && !dUpPrev;
+            boolean dDownPressed = dDown && !dDownPrev;
 
             dLeftPrev = dLeft;
             dRightPrev = dRight;
+            dUpPrev = dUp;
+            dDownPrev = dDown;
 
             boolean xNow = gamepad1.x;
             boolean yNow = gamepad1.y;
@@ -261,11 +292,9 @@ public class MainTeleop extends LinearOpMode {
             boolean rB = gamepad1.right_bumper;
 
             if (rB) {
-                // spindexer.setPosition(spindexerPosIntake[i]);  // SPINDEXER DISABLED
                 frontIntake.setPower(1);
                 backIntake.setPower(1);
             } else if (lB) {
-                // spindexer.setPosition(spindexerPosIntake[i]);  // SPINDEXER DISABLED
                 frontIntake.setPower(-1);
                 backIntake.setPower(-1);
             } else {
@@ -273,96 +302,37 @@ public class MainTeleop extends LinearOpMode {
                 backIntake.setPower(0);
             }
 
-            // AUTO-INDEXING (SPINDEXER) DISABLED
-            // Only do auto-indexing when not shooting
-            // if (!rotated && shootState == ShootState.IDLE && !outtaking) {
-                // String prev = ballcols.get(i);
-                // String now  = colorSensor.getColor(sensor);
-                // ballcols.set(i, now);
-// 
-                // boolean newBallArrived = prev.equals("blank") && !now.equals("blank");
-                // if (newBallArrived) {
-                    // Re-enable auto-indexing after a new ball is intaken/detected
-                    // autoIndexLockout = false;
-                    // autoIndexedSinceLastBall = false;
-                // }
-// 
-                // if (!autoIndexLockout && !ballcols.get(i).equals("blank")) {
-                    // for (int j = 0; j < 3; j++) {
-                        // if (ballcols.get(j).equals("blank")) {
-                            // i = j;
-                            // spindexer.setPosition(spindexerPosIntake[i]);  // SPINDEXER DISABLED
-                            // spintime.reset();
-                            // rotated = true;
-// 
-                            // autoIndexedSinceLastBall = true; // remember that auto moved
-                            // break;
-                        // }
-                    // }
-                // }
-            // }
-
-
             if (spintime.milliseconds() > 100 && rotated) {
                 rotated = false;
             }
 
-            // MANUAL INDEXING (SPINDEXER) DISABLED
-            // 4) Indexer and sample color
-            // if (dLeftPressed && i < spindexerPosIntake.length - 1 && !rotated) {
-                // rotated = true;
-                // outtaking = false;
-                // i++;
-                // spintime.reset();
-                // spindexer.setPosition(spindexerPosIntake[i]);  // SPINDEXER DISABLED
-// 
-                // if (autoIndexedSinceLastBall) autoIndexLockout = true; // driver override after auto
-                // telemetry.update();
-            // }
-// 
-            // if (dRightPressed && i > 0 && !rotated) {
-                // rotated = true;
-                // outtaking = false;
-                // i--;
-                // spintime.reset();
-                // spindexer.setPosition(spindexerPosIntake[i]);  // SPINDEXER DISABLED
-// 
-                // if (autoIndexedSinceLastBall) autoIndexLockout = true; // driver override after auto
-                // telemetry.update();
-            // }
-// 
-            // PATTERN / ORDER SORTING DISABLED (NO SPINDEXER)
-            // 5) Pattern selection (one-time at the start or round) (X, Y, B)
-            // boolean consumedYThisLoop = false;
-// 
-            // if (!patternChecked) {
-                // if (xPressed) {
-                    // p = 0;
-                    // patternChecked = true;
-                    // patternName = "g_first";
-                // } else if (yPressed) {
-                    // p = 1;
-                    // patternChecked = true;
-                    // patternName = "g_second";
-                    // consumedYThisLoop = true; // don't fire on same press
-                // } else if (bPressed) {
-                    // p = 2;
-                    // patternChecked = true;
-                    // patternName = "g_third";
-                // }
-            // }
-// 
             // 6) Cancel firing immediately for fallback (A)
             if (aPressed) {
                 cancelShooting();
             }
 
+            // 6.5) Live turret tuning
+            // D-pad up/down: encoder deg/rev (tracking strength)
+            // D-pad left/right: yaw frame offset
+            if (turret != null) {
+                if (dUpPressed) turret.yawEncoderDegPerRev = Range.clip(turret.yawEncoderDegPerRev + 1.0, 40.0, 400.0);
+                if (dDownPressed) turret.yawEncoderDegPerRev = Range.clip(turret.yawEncoderDegPerRev - 1.0, 40.0, 400.0);
+                if (dRightPressed) turret.yawRobotForwardOffsetDeg = angleWrapDeg(turret.yawRobotForwardOffsetDeg + 1.0);
+                if (dLeftPressed) turret.yawRobotForwardOffsetDeg = angleWrapDeg(turret.yawRobotForwardOffsetDeg - 1.0);
+            }
+
+
+// 6.75) Turret freeze toggle (X)
+// First press freezes turret in place; second press re-enables tracking.
+if (xPressed && turret != null) {
+    turret.setFrozen(!turret.isFrozen());
+}
+
             // 7) Start firing (Y)
             if (yPressed && shootState == ShootState.IDLE) {
-                // No spindexer / no sorting / single-ball robot: spin up launcher, then feed once.
                 stype = "single";
                 telemetry.update();
-                startShooting(new int[]{0});
+                startShooting();
             }
 
             // 8) Update shooter states
@@ -374,26 +344,107 @@ public class MainTeleop extends LinearOpMode {
             // 10) Update localizer
             localizer.update();
 
-            // 11) Update turret
+            // 11) Update turret (Limelight AprilTags)
             robotPos = localizer.getPose();
-            ArrayList<AprilTagDetection> detections = pipeline.getLatestDetections();
-            for (AprilTagDetection tag : detections) {
-                telemetry.addData("detection", tag.id);
-                if (tag.id == 20 || tag.id == 24) {
-                    double bearing = Math.toDegrees(Math.atan2(tag.pose.x, tag.pose.z));
-                    // turret.updateVisionMeasurement(bearing, true);
 
-                    double forwardDist = tag.pose.z * 3.28084 * 12 - robotPos.position.y; // convert to inches if needed
-                    double leftRight = tag.pose.x * 3.28084 * 12 - robotPos.position.x;
-                    double height = tag.pose.y * 3.28084 * 12; // height of tag relative
+            boolean tagSeen = false;
+            double yawErrDeg = 0.0; // still used for telemetry
+            double distIn = 0.0;
+            double tagRobotXIn = 0.0;
+            double tagRobotYIn = 0.0;
+            double tagRobotZIn = 0.0;
 
-                    // turret.setTargetRobotRelative(forwardDist, leftRight, height);
+            LLResult result = (limelight != null) ? limelight.getLatestResult() : null;
+            if (result != null && result.isValid()) {
+                List<LLResultTypes.FiducialResult> fiducials = result.getFiducialResults();
+                if (fiducials != null) {
+                    for (LLResultTypes.FiducialResult f : fiducials) {
+                        telemetry.addData("detection", f.getFiducialId());
+                        int id = f.getFiducialId();
+                        if (id == 20 || id == 21 || id == 24) {
+                            yawErrDeg = f.getTargetXDegrees();
+                            boolean havePoseRange = false;
+                            Pose3D tagPoseRobot = f.getTargetPoseRobotSpace();
+                            if (tagPoseRobot != null) {
+                                double xM = tagPoseRobot.getPosition().x;
+                                double yM = tagPoseRobot.getPosition().y;
+                                double zM = tagPoseRobot.getPosition().z;
+                                tagRobotZIn = zM * 39.3701;
+                                double distM = Math.sqrt(xM*xM + yM*yM + zM*zM);
+                                distIn = distM * 39.3701;
+                                havePoseRange = distIn > 1.0;
+                                telemetry.addData("apriltagX", xM);
+                                telemetry.addData("apriltagY", yM);
+                                telemetry.addData("apriltagZ", zM);
+                                telemetry.addData("yawErr", yawErrDeg);
+                            }
+
+                            if (!havePoseRange) {
+                                distIn = DEFAULT_TAG_RANGE_IN;
+                            }
+
+                            // Build robot-relative target using tx bearing and range.
+                            double bearingCamRad = Math.toRadians(TX_TO_ROBOT_LEFT_SIGN * yawErrDeg);
+                            double tagCamX = distIn * Math.cos(bearingCamRad); // forward from camera
+                            double tagCamY = distIn * Math.sin(bearingCamRad); // left from camera
+
+                            double c = Math.cos(LL_YAW_RAD);
+                            double s = Math.sin(LL_YAW_RAD);
+                            tagRobotXIn = LL_X_IN + (tagCamX * c - tagCamY * s);
+                            tagRobotYIn = LL_Y_IN + (tagCamX * s + tagCamY * c);
+
+                            // Save absolute field location for continued tracking after tag loss.
+                            // Even if distance is fallback-estimated, this keeps "perma tracking"
+                            // behavior alive after first sighting.
+                            double rh = robotPos.heading.toDouble();
+                            double ch = Math.cos(rh);
+                            double sh = Math.sin(rh);
+                            lastTagFieldX = robotPos.position.x + (tagRobotXIn * ch - tagRobotYIn * sh);
+                            lastTagFieldY = robotPos.position.y + (tagRobotXIn * sh + tagRobotYIn * ch);
+                            hasLastTagField = true;
+
+                            lastTagRobotZIn = tagRobotZIn;
+                            hasLastTagZ = true;
+
+                            tagSeen = true;
+                            break;
+                        }
+                    }
                 }
             }
-            // turret.update();
 
-            findKp();
+            if (turret != null) {
+                boolean memoryTrackingActive = false;
+                if (tagSeen) {
+                    turret.updateVisionMeasurement(tagRobotXIn, tagRobotYIn, tagRobotZIn, yawErrDeg, true);
+                } else if (hasLastTagField) {
+                    // Field -> robot transform (x forward, y left).
+                    double dx = lastTagFieldX - robotPos.position.x;
+                    double dy = lastTagFieldY - robotPos.position.y;
+                    double rh = robotPos.heading.toDouble();
+                    double ch = Math.cos(rh);
+                    double sh = Math.sin(rh);
+                    double targetRobotX =  dx * ch + dy * sh;
+                    double targetRobotY = -dx * sh + dy * ch;
+                    double zHold = hasLastTagZ ? lastTagRobotZIn : 0.0;
+                    turret.setTargetRobotRelative(targetRobotX, targetRobotY, zHold);
+                    turret.updateVisionMeasurement(0.0, 0.0, 0.0, 0.0, false);
+                    memoryTrackingActive = true;
+                } else {
+                    // No vision and nothing remembered
+                    turret.updateVisionMeasurement(0.0, 0.0, 0.0, 0.0, false);
+                }
 
+                turret.update();
+                telemetry.addData("trackMode", tagSeen ? "VISION" : (memoryTrackingActive ? "MEMORY" : "NONE"));
+                telemetry.addData("turretFrozen", turret.isFrozen() ? "YES" : "NO");
+            }
+
+            telemetry.addData("tagMemory", hasLastTagField ? "YES" : "NO");
+            telemetry.addData("tagZHold", hasLastTagZ ? String.format("%.1f in", lastTagRobotZIn) : "NO");
+            if (hasLastTagField) {
+                telemetry.addData("lastTagField", "x=%.1f y=%.1f", lastTagFieldX, lastTagFieldY);
+            }
             // Telemetry updates
             telemetry.addData("drive", "x=%.2f y=%.2f h=%.2f", x, y, h);
             telemetry.addData("pattern", patternName);
@@ -404,6 +455,21 @@ public class MainTeleop extends LinearOpMode {
             telemetry.addData("typeofshot", stype);
             telemetry.addData("pos", launcher.getCurrentPosition());
             telemetry.addData("vel", launcher.getVelocity());
+            telemetry.addData("rawOutValue", turret.rawOut());
+            telemetry.addData("yawErrorDeg", turret.rawYawErrorDeg());
+            telemetry.addData("rawPosition", turret.rawPos());
+            telemetry.addData("useTxForYaw", turret.useTxForYaw);
+            telemetry.addData("visionFresh", turret.rawVisionFresh());
+            telemetry.addData("yawSource", turret.rawYawSource());
+            telemetry.addData("txUsedDeg", "%.2f", turret.rawTxUsedDeg());
+            telemetry.addData("pitchCmd", "%.3f", turret.rawPitchCmd());
+            telemetry.addData("pitchDesired", "%.3f", turret.rawPitchDesired());
+            telemetry.addData("tagSeen", tagSeen);
+            telemetry.addData("tagDistIn", "%.1f", distIn);
+            telemetry.addData("turretYawOffsetDeg", "%.1f", turret.yawRobotForwardOffsetDeg);
+            telemetry.addData("yawEncDegPerRev", "%.4f", turret.yawEncoderDegPerRev);
+            telemetry.addData("tune", "up/down=encDegPerRev left/right=offset");
+            telemetry.addData("distance", distIn);
             telemetry.update();
 
             idle();
@@ -449,12 +515,11 @@ public class MainTeleop extends LinearOpMode {
     }
 
     // Shooting States
-    private void startShooting(int[] order) {
-        shotOrder = order.clone();
+    private void startShooting() {
         shotIndex = 0;
 
         // kick off
-        shootState = ShootState.AIM;
+        shootState = ShootState.START;
         shootTimer.reset();
     }
 
@@ -471,12 +536,6 @@ public class MainTeleop extends LinearOpMode {
             if (v > 0) minV = Math.min(minV, v);
         }
         return (minV < 99.0) ? minV : NOMINAL_VOLTAGE;
-    }
-
-    // Voltage compensation for CRServo power (keeps feed speed more consistent)
-    private double vcPower(double pwr) {
-        double scale = NOMINAL_VOLTAGE / batteryVoltage();
-        return Range.clip(pwr * scale, -1.0, 1.0);
     }
 
     // Compensate launcher F term so velocity loop behaves similarly as voltage changes
@@ -549,7 +608,7 @@ public class MainTeleop extends LinearOpMode {
         }
         // Optional: voltage compensation (helps keep behavior consistent)
         double scale = NOMINAL_VOLTAGE / batteryVoltage();
-        power = Range.clip(power * scale, -1.0, 1.0);
+        power = Range.clip(power, -1.0, 1.0);
 
         launcher.setPower(power);
 
@@ -569,7 +628,7 @@ public class MainTeleop extends LinearOpMode {
 
         // Optional: voltage compensation (helps keep behavior consistent)
         double scale = NOMINAL_VOLTAGE / batteryVoltage();
-        power = Range.clip(power, -1.0, 1.0);
+        power = Range.clip(power * scale, -1.0, 1.0);
 
         launcher.setPower(power);
 
@@ -584,32 +643,11 @@ public class MainTeleop extends LinearOpMode {
                 outtaking = false;
                 return;
 
-            case AIM: {
+            case START: {
                 outtaking = true;
-                // turret.update();
-
-                // If turret is aimed, continue
-                // if (turret.isAimed()) {
-                    // shootState = ShootState.SET_SERVO;
-                    // shootTimer.reset();
-                // }
-                shootState = ShootState.SET_SERVO;
-                Kp = 0;
-                telemetry.addData("turret", "aiming...");
-                break;
-            }
-
-            case SET_SERVO: {
-                outtaking = true;
-                // Move servo to the next desired outtake position
-                // int posIdx = shotOrder[shotIndex];  // SPINDEXER DISABLED
-//   // SPINDEXER DISABLED
-                // posIdx = (posIdx + 1) % 3; // Spindexer Outtake is offset by 1.  // SPINDEXER DISABLED
-                // posIdx = Math.max(0, Math.min(posIdx, spindexerPosOuttake.length - 1));  // SPINDEXER DISABLED
-                // spindexer.setPosition(spindexerPosOuttake[posIdx]);  // SPINDEXER DISABLED
 
                 // Single-shot: always use the "first shot" RPM
-                setLauncherRPM(TARGET_RPM_FIRST);
+                setLauncherRPM(TARGET_RPM);
 
                 rpmStableTimer.reset();
                 shootTimer.reset();
@@ -618,7 +656,7 @@ public class MainTeleop extends LinearOpMode {
             }
 
             case SPINUP: {
-                double targetRpm = TARGET_RPM_FIRST;
+                double targetRpm = TARGET_RPM;
                 long needed = FIRST_SPINUP_MS;
 
                 boolean atSpeed = launcherAtSpeed(targetRpm);
@@ -632,8 +670,8 @@ public class MainTeleop extends LinearOpMode {
 
                 if (stableEnough || timedOut) {
                     // Feed one ball into the launcher
-                    bottomFlywheel.setPower(vcPower(FEED_POWER));
-                    topFlywheel.setPower(vcPower(FEED_POWER));
+                    bottomFlywheel.setPower(FEED_POWER);
+                    topFlywheel.setPower(FEED_POWER);
 
                     shootTimer.reset();
                     shootState = ShootState.FIRE;
@@ -658,7 +696,7 @@ public class MainTeleop extends LinearOpMode {
 
 
             case RECOVER: {
-                double targetRpm = TARGET_RPM_FIRST;
+                double targetRpm = TARGET_RPM;
 
                 // Prefer RPM recovery; also keep a minimum delay
                 boolean recovered = launcherAtSpeed(targetRpm);
