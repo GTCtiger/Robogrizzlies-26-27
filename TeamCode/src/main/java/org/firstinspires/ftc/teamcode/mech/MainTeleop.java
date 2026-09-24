@@ -5,11 +5,9 @@ import com.qualcomm.hardware.rev.RevColorSensorV3;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.CRServo;
-import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
-import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.util.ElapsedTime;
 import com.qualcomm.robotcore.hardware.PIDFCoefficients;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
@@ -24,7 +22,7 @@ import org.firstinspires.ftc.teamcode.mech.Auto.PinpointLocalizer;
 import org.firstinspires.ftc.teamcode.mech.CV.ColorDetection;
 import org.firstinspires.ftc.teamcode.mech.movement.movement;
 import org.firstinspires.ftc.teamcode.mech.control.CustomPIDF;
-import org.firstinspires.ftc.teamcode.mech.control.TurretController;
+import org.firstinspires.ftc.teamcode.mech.control.ChassisAimController;
 
 
 import java.util.ArrayList;
@@ -50,8 +48,6 @@ public class MainTeleop extends LinearOpMode {
     private final ElapsedTime spintime = new ElapsedTime();
 
     // Button tracking
-    private boolean dLeftPrev = false, dRightPrev = false;
-    private boolean dUpPrev = false, dDownPrev = false;
     private boolean xPrev = false, yPrev = false, bPrev = false, aPrev = false;
 
     // Pattern selection
@@ -106,12 +102,8 @@ public class MainTeleop extends LinearOpMode {
     private double launcherTargetTicksPerSec = 0.0;
     private boolean launcherControlEnabled = false;
 
-    // turret control
-
-    private CRServo turretYaw;
-    private Servo turretPitch;
-    private AnalogInput turretYawEnc;
-    private TurretController turret;
+    // Chassis aiming
+    private ChassisAimController aim;
 
     private PinpointLocalizer localizer;
     private Pose2d robotPos;
@@ -126,6 +118,7 @@ public class MainTeleop extends LinearOpMode {
 
     // Limelight AprilTag detection
     private Limelight3A limelight;
+    private long lastVisionTimestamp = 0;
 
     // TODO: Measure these offsets
     private static final double LL_X_IN = 0.0;
@@ -136,20 +129,12 @@ public class MainTeleop extends LinearOpMode {
     private static final double TX_TO_ROBOT_LEFT_SIGN = -1.0;
     // Used only when pose range is unavailable for a detected tag.
     private static final double DEFAULT_TAG_RANGE_IN = 48.0;
-    // Persistent offset from robot-forward frame to turret frame.
-    private static final double TURRET_YAW_FORWARD_OFFSET_DEG = 0;
-    // Start slightly lower so compensation is stronger (can be tuned live).
-    private static final double TURRET_YAW_ENC_DEG_PER_REV = 122.7272;
 
     // Last seen tag position in field coordinates (inches)
     private boolean hasLastTagField = false;
     private double lastTagFieldX = 0.0;
     private double lastTagFieldY = 0.0;
 
-
-// Last seen tag height in robot coordinates (inches). Used to keep pitch stable after tag loss.
-private boolean hasLastTagZ = false;
-private double lastTagRobotZIn = 0.0;
 
     // Helpers
     private static double deadzone(double v, double dz) {
@@ -160,12 +145,6 @@ private double lastTagRobotZIn = 0.0;
     private static double angleWrapRad(double a) {
         while (a > Math.PI) a -= 2.0 * Math.PI;
         while (a < -Math.PI) a += 2.0 * Math.PI;
-        return a;
-    }
-
-    private static double angleWrapDeg(double a) {
-        while (a > 180.0) a -= 360.0;
-        while (a <= -180.0) a += 360.0;
         return a;
     }
 
@@ -184,25 +163,13 @@ private double lastTagRobotZIn = 0.0;
         launcher = hardwareMap.get(DcMotorEx.class, "launcher");
         backIntake = hardwareMap.get(DcMotorEx.class, "backIntake");
         frontIntake = hardwareMap.get(DcMotorEx.class, "frontIntake");
-        turretYaw  = hardwareMap.get(CRServo.class, "turretYaw");
-        turretPitch = hardwareMap.get(Servo.class, "turretPitch");
-        turretYawEnc = hardwareMap.get(AnalogInput.class, "turretYawEnc");
 
 
         launcher.setDirection(DcMotorEx.Direction.REVERSE);
 
         localizer = new PinpointLocalizer(hardwareMap, 0.00199746322, new Pose2d(0, 0, Math.toRadians(90)));
 
-        turret = new TurretController(turretYaw, turretPitch, turretYawEnc);
-        turret.yawEncoderDegPerRev = TURRET_YAW_ENC_DEG_PER_REV;
-        turret.resetYawEstimate();
-        turret.useTxForYaw = true;
-        turret.txSign = 1.0;
-        turret.txFilterAlpha = 0.25;
-        turret.txDeadbandDeg = 0.5;
-        turret.yawRobotForwardOffsetDeg = angleWrapDeg(TURRET_YAW_FORWARD_OFFSET_DEG);
-
-        // turret.setTargetRobotRelative(36, 10, 0);
+        aim = new ChassisAimController();
 
         launcher.setMode(DcMotorEx.RunMode.STOP_AND_RESET_ENCODER);
 
@@ -253,24 +220,8 @@ private double lastTagRobotZIn = 0.0;
             double x = deadzone(gamepad1.left_stick_x, 0.2);   // strafe
             double y = deadzone(gamepad1.left_stick_y, 0.2);  // forward
             double h = deadzone(gamepad1.right_stick_x, 0.2);  // turn
-            drive.move(x, y, h);
 
             // 2) Edge detection
-            boolean dLeft = gamepad1.dpad_left;
-            boolean dRight = gamepad1.dpad_right;
-            boolean dUp = gamepad1.dpad_up;
-            boolean dDown = gamepad1.dpad_down;
-
-            boolean dLeftPressed  = dLeft  && !dLeftPrev;
-            boolean dRightPressed = dRight && !dRightPrev;
-            boolean dUpPressed = dUp && !dUpPrev;
-            boolean dDownPressed = dDown && !dDownPrev;
-
-            dLeftPrev = dLeft;
-            dRightPrev = dRight;
-            dUpPrev = dUp;
-            dDownPrev = dDown;
-
             boolean xNow = gamepad1.x;
             boolean yNow = gamepad1.y;
             boolean bNow = gamepad1.b;
@@ -311,22 +262,8 @@ private double lastTagRobotZIn = 0.0;
                 cancelShooting();
             }
 
-            // 6.5) Live turret tuning
-            // D-pad up/down: encoder deg/rev (tracking strength)
-            // D-pad left/right: yaw frame offset
-            if (turret != null) {
-                if (dUpPressed) turret.yawEncoderDegPerRev = Range.clip(turret.yawEncoderDegPerRev + 1.0, 40.0, 400.0);
-                if (dDownPressed) turret.yawEncoderDegPerRev = Range.clip(turret.yawEncoderDegPerRev - 1.0, 40.0, 400.0);
-                if (dRightPressed) turret.yawRobotForwardOffsetDeg = angleWrapDeg(turret.yawRobotForwardOffsetDeg + 1.0);
-                if (dLeftPressed) turret.yawRobotForwardOffsetDeg = angleWrapDeg(turret.yawRobotForwardOffsetDeg - 1.0);
-            }
-
-
-// 6.75) Turret freeze toggle (X)
-// First press freezes turret in place; second press re-enables tracking.
-if (xPressed && turret != null) {
-    turret.setFrozen(!turret.isFrozen());
-}
+            // X toggles chassis aiming; the right stick always overrides it.
+            if (xPressed) aim.setFrozen(!aim.isFrozen());
 
             // 7) Start firing (Y)
             if (yPressed && shootState == ShootState.IDLE) {
@@ -344,7 +281,7 @@ if (xPressed && turret != null) {
             // 10) Update localizer
             localizer.update();
 
-            // 11) Update turret (Limelight AprilTags)
+            // 11) Aim the chassis using Limelight tags and Pinpoint odometry.
             robotPos = localizer.getPose();
 
             boolean tagSeen = false;
@@ -352,10 +289,11 @@ if (xPressed && turret != null) {
             double distIn = 0.0;
             double tagRobotXIn = 0.0;
             double tagRobotYIn = 0.0;
-            double tagRobotZIn = 0.0;
 
             LLResult result = (limelight != null) ? limelight.getLatestResult() : null;
-            if (result != null && result.isValid()) {
+            if (result != null && result.isValid() && result.getStaleness() < 250
+                    && result.getControlHubTimeStamp() > lastVisionTimestamp) {
+                lastVisionTimestamp = result.getControlHubTimeStamp();
                 List<LLResultTypes.FiducialResult> fiducials = result.getFiducialResults();
                 if (fiducials != null) {
                     for (LLResultTypes.FiducialResult f : fiducials) {
@@ -369,7 +307,6 @@ if (xPressed && turret != null) {
                                 double xM = tagPoseRobot.getPosition().x;
                                 double yM = tagPoseRobot.getPosition().y;
                                 double zM = tagPoseRobot.getPosition().z;
-                                tagRobotZIn = zM * 39.3701;
                                 double distM = Math.sqrt(xM*xM + yM*yM + zM*zM);
                                 distIn = distM * 39.3701;
                                 havePoseRange = distIn > 1.0;
@@ -403,9 +340,6 @@ if (xPressed && turret != null) {
                             lastTagFieldY = robotPos.position.y + (tagRobotXIn * sh + tagRobotYIn * ch);
                             hasLastTagField = true;
 
-                            lastTagRobotZIn = tagRobotZIn;
-                            hasLastTagZ = true;
-
                             tagSeen = true;
                             break;
                         }
@@ -413,10 +347,10 @@ if (xPressed && turret != null) {
                 }
             }
 
-            if (turret != null) {
+            if (aim != null) {
                 boolean memoryTrackingActive = false;
                 if (tagSeen) {
-                    turret.updateVisionMeasurement(tagRobotXIn, tagRobotYIn, tagRobotZIn, yawErrDeg, true);
+                    aim.updateVisionMeasurement(tagRobotXIn, tagRobotYIn, true, robotPos);
                 } else if (hasLastTagField) {
                     // Field -> robot transform (x forward, y left).
                     double dx = lastTagFieldX - robotPos.position.x;
@@ -426,22 +360,21 @@ if (xPressed && turret != null) {
                     double sh = Math.sin(rh);
                     double targetRobotX =  dx * ch + dy * sh;
                     double targetRobotY = -dx * sh + dy * ch;
-                    double zHold = hasLastTagZ ? lastTagRobotZIn : 0.0;
-                    turret.setTargetRobotRelative(targetRobotX, targetRobotY, zHold);
-                    turret.updateVisionMeasurement(0.0, 0.0, 0.0, 0.0, false);
+                    aim.setTargetRobotRelative(targetRobotX, targetRobotY, robotPos);
                     memoryTrackingActive = true;
                 } else {
                     // No vision and nothing remembered
-                    turret.updateVisionMeasurement(0.0, 0.0, 0.0, 0.0, false);
+                    aim.updateVisionMeasurement(0.0, 0.0, false, robotPos);
                 }
 
-                turret.update();
+                double turn = aim.update(robotPos);
+                // movement reverses the opposite motor side from the Road Runner drive.
+                drive.move(x, y, h != 0.0 ? h : -turn);
                 telemetry.addData("trackMode", tagSeen ? "VISION" : (memoryTrackingActive ? "MEMORY" : "NONE"));
-                telemetry.addData("turretFrozen", turret.isFrozen() ? "YES" : "NO");
+                telemetry.addData("aimFrozen", aim.isFrozen() ? "YES" : "NO");
             }
 
             telemetry.addData("tagMemory", hasLastTagField ? "YES" : "NO");
-            telemetry.addData("tagZHold", hasLastTagZ ? String.format("%.1f in", lastTagRobotZIn) : "NO");
             if (hasLastTagField) {
                 telemetry.addData("lastTagField", "x=%.1f y=%.1f", lastTagFieldX, lastTagFieldY);
             }
@@ -455,20 +388,11 @@ if (xPressed && turret != null) {
             telemetry.addData("typeofshot", stype);
             telemetry.addData("pos", launcher.getCurrentPosition());
             telemetry.addData("vel", launcher.getVelocity());
-            telemetry.addData("rawOutValue", turret.rawOut());
-            telemetry.addData("yawErrorDeg", turret.rawYawErrorDeg());
-            telemetry.addData("rawPosition", turret.rawPos());
-            telemetry.addData("useTxForYaw", turret.useTxForYaw);
-            telemetry.addData("visionFresh", turret.rawVisionFresh());
-            telemetry.addData("yawSource", turret.rawYawSource());
-            telemetry.addData("txUsedDeg", "%.2f", turret.rawTxUsedDeg());
-            telemetry.addData("pitchCmd", "%.3f", turret.rawPitchCmd());
-            telemetry.addData("pitchDesired", "%.3f", turret.rawPitchDesired());
+            telemetry.addData("turnPower", aim.getTurnPower());
+            telemetry.addData("yawErrorDeg", aim.getYawErrorDeg());
+            telemetry.addData("aimTarget", aim.hasTarget() ? "YES" : "NO");
             telemetry.addData("tagSeen", tagSeen);
             telemetry.addData("tagDistIn", "%.1f", distIn);
-            telemetry.addData("turretYawOffsetDeg", "%.1f", turret.yawRobotForwardOffsetDeg);
-            telemetry.addData("yawEncDegPerRev", "%.4f", turret.yawEncoderDegPerRev);
-            telemetry.addData("tune", "up/down=encDegPerRev left/right=offset");
             telemetry.addData("distance", distIn);
             telemetry.update();
 

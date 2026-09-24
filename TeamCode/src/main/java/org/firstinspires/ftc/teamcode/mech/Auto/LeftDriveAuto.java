@@ -3,6 +3,7 @@ package org.firstinspires.ftc.teamcode.mech.Auto;
 import com.acmerobotics.dashboard.telemetry.TelemetryPacket;
 import com.acmerobotics.roadrunner.Action;
 import com.acmerobotics.roadrunner.Pose2d;
+import com.acmerobotics.roadrunner.PoseVelocity2d;
 import com.acmerobotics.roadrunner.SequentialAction;
 import com.acmerobotics.roadrunner.TranslationalVelConstraint;
 import com.acmerobotics.roadrunner.Vector2d;
@@ -16,12 +17,11 @@ import com.qualcomm.robotcore.hardware.CRServo;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
-import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.util.ElapsedTime;
 
 import org.firstinspires.ftc.robotcore.external.navigation.Pose3D;
 import org.firstinspires.ftc.teamcode.mech.control.CustomPIDF;
-import org.firstinspires.ftc.teamcode.mech.control.TurretController;
+import org.firstinspires.ftc.teamcode.mech.control.ChassisAimController;
 
 import java.util.List;
 
@@ -94,10 +94,9 @@ public class LeftDriveAuto extends LinearOpMode {
         static double currentTargetVel = 0.0;
         final DcMotor backIntake, frontIntake;
         final DcMotorEx launcher;
-        final CRServo turretYaw;
-        final Servo turretPitch;
-        final TurretController turret;
+        final ChassisAimController aim;
         final Limelight3A limelight;
+        long lastVisionTimestamp = 0;
         final CustomPIDF launcherPIDF;
         final ElapsedTime launcherLoopTimer = new ElapsedTime();
         final double launcherTicksPerRev;
@@ -116,9 +115,7 @@ public class LeftDriveAuto extends LinearOpMode {
             topFlywheel = opMode.hardwareMap.get(CRServo.class, "topFlywheel");
             // spindexer = opMode.hardwareMap.get(Servo.class, "spindexer");
 
-            turretYaw = opMode.hardwareMap.get(CRServo.class, "turretYaw");
-            turretPitch = opMode.hardwareMap.get(Servo.class, "turretPitch");
-            turret = new TurretController(turretYaw, turretPitch);
+            aim = new ChassisAimController();
             limelight = opMode.hardwareMap.get(Limelight3A.class, "limelight");
             limelight.setPollRateHz(100);
             limelight.start();
@@ -319,7 +316,7 @@ public class LeftDriveAuto extends LinearOpMode {
     }
     private enum Phase { START_BALL, AIM, SPINUP, FIRE, ADVANCE, DONE }
 
-    private static Action shootThreeBalls(RobotHW hw) {
+    private static Action shootThreeBalls(RobotHW hw, MecanumDrive drive) {
         return new Action() {
             private Phase phase = Phase.START_BALL;
             private int ballIndex = 0;
@@ -348,14 +345,17 @@ public class LeftDriveAuto extends LinearOpMode {
                         return true;
                     }
                 case AIM: {
+                    drive.updatePoseEstimate();
+                    Pose2d pose = drive.localizer.getPose();
                     boolean tagSeen = false;
                     double yawErrDeg = 0.0;
                     double xIn = 0.0;
                     double yIn = 0.0;
-                    double zIn = 0.0;
 
                     LLResult result = (hw.limelight != null) ? hw.limelight.getLatestResult() : null;
-                    if (result != null && result.isValid()) {
+                    if (result != null && result.isValid() && result.getStaleness() < 250
+                            && result.getControlHubTimeStamp() > hw.lastVisionTimestamp) {
+                        hw.lastVisionTimestamp = result.getControlHubTimeStamp();
                         List<LLResultTypes.FiducialResult> fiducials = result.getFiducialResults();
                         if (fiducials != null) {
                             for (LLResultTypes.FiducialResult f : fiducials) {
@@ -363,14 +363,16 @@ public class LeftDriveAuto extends LinearOpMode {
                                 if (id == 20 || id == 21 || id == 24) {
                                     yawErrDeg = f.getTargetXDegrees();
                                     Pose3D tagPoseRobot = f.getTargetPoseRobotSpace();
+                                    double rangeIn = 48.0;
                                     if (tagPoseRobot != null) {
                                         double xM = tagPoseRobot.getPosition().x;
                                         double yM = tagPoseRobot.getPosition().y;
                                         double zM = tagPoseRobot.getPosition().z;
-                                        xIn = xM * 39.3701;
-                                        yIn = yM * 39.3701;
-                                        zIn = zM * 39.3701;
+                                        double measuredRangeIn = Math.sqrt(xM*xM + yM*yM + zM*zM) * 39.3701;
+                                        if (measuredRangeIn > 1.0) rangeIn = measuredRangeIn;
                                     }
+                                    xIn = rangeIn * Math.cos(Math.toRadians(-yawErrDeg));
+                                    yIn = 8.0 + rangeIn * Math.sin(Math.toRadians(-yawErrDeg));
                                     tagSeen = true;
                                     break;
                                 }
@@ -378,11 +380,11 @@ public class LeftDriveAuto extends LinearOpMode {
                         }
                     }
 
-                    if (hw.turret != null) {
-                        hw.turret.updateVisionMeasurement(xIn, yIn, zIn, yawErrDeg, tagSeen);
-                        hw.turret.update();
-                    }
-                    if (hw.turret.isAimed() || phaseTimer.seconds() > 1.5) {
+                    hw.aim.updateVisionMeasurement(xIn, yIn, tagSeen, pose);
+                    double turn = hw.aim.update(pose);
+                    drive.setDrivePowers(new PoseVelocity2d(new Vector2d(0, 0), turn));
+                    if (hw.aim.isAimed() || phaseTimer.seconds() > 1.5) {
+                        drive.setDrivePowers(new PoseVelocity2d(new Vector2d(0, 0), 0));
                         phase = Phase.SPINUP;
                         resetTimer();
                     }
