@@ -4,7 +4,7 @@ import com.acmerobotics.roadrunner.Pose2d;
 import com.qualcomm.robotcore.util.ElapsedTime;
 import com.qualcomm.robotcore.util.Range;
 
-/** Turns the chassis toward a tag, using odometry to keep aiming after vision drops out. */
+// Turns the chassis toward a tag, using odometry to keep aiming after vision drops out.
 public class ChassisAimController {
     public double turnKp = 0.018;
     public double maxTurnPower = 0.5;
@@ -45,7 +45,7 @@ public class ChassisAimController {
         hasTarget = true;
     }
 
-    /** Returns the normalized CCW turn command to send to the drive wheels. */
+    // Returns the normalized CCW turn command to send to the drive wheels.
     public double update(Pose2d pose) {
         if (frozen || !hasTarget) {
             yawErrorDeg = 0.0;
