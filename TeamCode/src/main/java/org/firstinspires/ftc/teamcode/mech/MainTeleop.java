@@ -37,7 +37,7 @@ public class MainTeleop extends LinearOpMode {
     // Hardware maps
     private movement drive;
     private CRServo bottomFlywheel, topFlywheel;
-    private DcMotorEx backIntake, frontIntake, launcher;
+    private DcMotorEx backIntake, middleIntake, frontIntake, launcher;
 
     //z Ball tracking
     private final List<String> ballcols = new ArrayList<>();
@@ -162,6 +162,7 @@ public class MainTeleop extends LinearOpMode {
         topFlywheel = hardwareMap.get(CRServo.class, "topFlywheel");
         launcher = hardwareMap.get(DcMotorEx.class, "launcher");
         backIntake = hardwareMap.get(DcMotorEx.class, "backIntake");
+        middleIntake = hardwareMap.get(DcMotorEx.class, "middleIntake");
         frontIntake = hardwareMap.get(DcMotorEx.class, "frontIntake");
 
 
@@ -244,12 +245,15 @@ public class MainTeleop extends LinearOpMode {
 
             if (rB) {
                 frontIntake.setPower(1);
+                middleIntake.setPower(1);
                 backIntake.setPower(1);
             } else if (lB) {
                 frontIntake.setPower(-1);
+                middleIntake.setPower(1);
                 backIntake.setPower(-1);
             } else {
                 frontIntake.setPower(0);
+                middleIntake.setPower(1);
                 backIntake.setPower(0);
             }
 
