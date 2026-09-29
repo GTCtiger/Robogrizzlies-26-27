@@ -10,8 +10,10 @@ import com.acmerobotics.roadrunner.Vector2d;
 import com.acmerobotics.roadrunner.ftc.Actions;
 import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
+import com.qualcomm.robotcore.hardware.CRServo;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
+import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.util.ElapsedTime;
 
@@ -82,18 +84,20 @@ public class RightLaunchAuto extends LinearOpMode {
         }
     }
     private static final class RobotHW {
+        final CRServo bottomFlywheel, topFlywheel;
         final Servo spindexer;
-        final DcMotor backIntake, middleIntake, frontIntake;
+        final DcMotor backIntake, frontIntake;
         final DcMotorEx launcher;
 
         RobotHW(LinearOpMode opMode) {
             backIntake = opMode.hardwareMap.get(DcMotor.class, "backIntake");
-            middleIntake = opMode.hardwareMap.get(DcMotor.class, "middleIntake");
             frontIntake = opMode.hardwareMap.get(DcMotor.class, "frontIntake");
             launcher = opMode.hardwareMap.get(DcMotorEx.class, "launcher");
             launcher.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
 
 
+            bottomFlywheel = opMode.hardwareMap.get(CRServo.class, "bottomFlywheel");
+            topFlywheel = opMode.hardwareMap.get(CRServo.class, "topFlywheel");
             spindexer = opMode.hardwareMap.get(Servo.class, "spindexer");
         }
 
@@ -102,14 +106,17 @@ public class RightLaunchAuto extends LinearOpMode {
             frontIntake.setPower(pwr);
         }
 
-        void stopIntermediateIntakes() {
-            backIntake.setPower(0);
-            middleIntake.setPower(0);
+        void stopFlywheels() {
+            bottomFlywheel.setPower(0);
+            topFlywheel.setPower(0);
         }
 
-        void startIntermediateIntakesForShooting() {
-            backIntake.setPower(1);
-            middleIntake.setPower(1);
+        void startFlywheelsForShooting() {
+            // Same intent as your code: left forward, right reverse
+            bottomFlywheel.setDirection(DcMotorSimple.Direction.FORWARD);
+            topFlywheel.setDirection(DcMotorSimple.Direction.REVERSE);
+            bottomFlywheel.setPower(1);
+            topFlywheel.setPower(1);
         }
     }
 
@@ -297,7 +304,7 @@ public class RightLaunchAuto extends LinearOpMode {
 
                     case START_BALL: {
                         // Start launcher and set initial spindex position for this ball
-                        hw.stopIntermediateIntakes();
+                        hw.stopFlywheels();
                         hw.launcher.setVelocity((ballIndex == 0) ? Config.TARGET_VEL_FIRST : Config.TARGET_VEL_NEXT);
                         hw.spindexer.setPosition(Config.SPINDEX_OUTTAKE[ballIndex]);
 
@@ -321,7 +328,7 @@ public class RightLaunchAuto extends LinearOpMode {
                     }
                     case FIRE: {
                         // Run flywheels during the fire window
-                        hw.startIntermediateIntakesForShooting();
+                        hw.startFlywheelsForShooting();
 
                         if (phaseTimer.seconds() < Config.FIRE_WINDOW_SEC) return true;
                         hw.spindexer.setPosition(Config.SPINDEX_OUTTAKE[ballIndex]);
@@ -330,7 +337,7 @@ public class RightLaunchAuto extends LinearOpMode {
                         return true;
                     }
                     case ADVANCE: {
-                        hw.stopIntermediateIntakes();
+                        hw.stopFlywheels();
 
                         if (ballIndex < 2) {
                             ballIndex++;
@@ -345,7 +352,7 @@ public class RightLaunchAuto extends LinearOpMode {
                     }
 
                     case DONE: {
-                        hw.stopIntermediateIntakes();
+                        hw.stopFlywheels();
                         hw.launcher.setPower(0);
                         hw.spindexer.setPosition(Config.SPINDEX_OUTTAKE[0]);
                         return false;
