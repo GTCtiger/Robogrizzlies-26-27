@@ -15,12 +15,8 @@ import com.qualcomm.robotcore.hardware.PIDFCoefficients;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
 import com.qualcomm.robotcore.util.Range;
 
-import com.qualcomm.hardware.limelightvision.LLResult;
-import com.qualcomm.hardware.limelightvision.LLResultTypes;
-import com.qualcomm.hardware.limelightvision.Limelight3A;
 import org.firstinspires.ftc.robotcore.external.navigation.Pose3D;
 
-import org.firstinspires.ftc.teamcode.mech.Auto.PinpointLocalizer;
 import org.firstinspires.ftc.teamcode.mech.CV.ColorDetection;
 import org.firstinspires.ftc.teamcode.mech.movement.movement;
 import org.firstinspires.ftc.teamcode.mech.control.CustomPIDF;
@@ -113,7 +109,6 @@ public class MainTeleop extends LinearOpMode {
     private AnalogInput turretYawEnc;
     private TurretController turret;
 
-    private PinpointLocalizer localizer;
     private Pose2d robotPos;
 
     // tune values
@@ -123,9 +118,6 @@ public class MainTeleop extends LinearOpMode {
 
     // kF will be computed from motor max speed at init, but you can override if you want:
     private static double LAUNCH_kF = -1.0; // -1 = auto compute
-
-    // Limelight AprilTag detection
-    private Limelight3A limelight;
 
     // TODO: Measure these offsets
     private static final double LL_X_IN = 0.0;
@@ -191,8 +183,6 @@ private double lastTagRobotZIn = 0.0;
 
         launcher.setDirection(DcMotorEx.Direction.REVERSE);
 
-        localizer = new PinpointLocalizer(hardwareMap, 0.00199746322, new Pose2d(0, 0, Math.toRadians(90)));
-
         turret = new TurretController(turretYaw, turretPitch, turretYawEnc);
         turret.yawEncoderDegPerRev = TURRET_YAW_ENC_DEG_PER_REV;
         turret.resetYawEstimate();
@@ -222,12 +212,6 @@ private double lastTagRobotZIn = 0.0;
 
         telemetry.addLine("Ready");
         telemetry.update();
-
-        // Limelight init
-        limelight = hardwareMap.get(Limelight3A.class, "limelight");
-        limelight.setPollRateHz(100);
-        limelight.start();
-        limelight.pipelineSwitch(0); // pipeline index
 
         waitForStart();
 
@@ -320,15 +304,6 @@ private double lastTagRobotZIn = 0.0;
                 if (dRightPressed) turret.yawRobotForwardOffsetDeg = angleWrapDeg(turret.yawRobotForwardOffsetDeg + 1.0);
                 if (dLeftPressed) turret.yawRobotForwardOffsetDeg = angleWrapDeg(turret.yawRobotForwardOffsetDeg - 1.0);
             }
-
-
-// 6.75) Turret freeze toggle (X)
-// First press freezes turret in place; second press re-enables tracking.
-if (xPressed && turret != null) {
-    turret.setFrozen(!turret.isFrozen());
-}
-
-            // 7) Start firing (Y)
             if (yPressed && shootState == ShootState.IDLE) {
                 stype = "single";
                 telemetry.update();
@@ -341,110 +316,6 @@ if (xPressed && turret != null) {
             // 9) Update PIDF
             updateLauncherPIDF();
 
-            // 10) Update localizer
-            localizer.update();
-
-            // 11) Update turret (Limelight AprilTags)
-            robotPos = localizer.getPose();
-
-            boolean tagSeen = false;
-            double yawErrDeg = 0.0; // still used for telemetry
-            double distIn = 0.0;
-            double tagRobotXIn = 0.0;
-            double tagRobotYIn = 0.0;
-            double tagRobotZIn = 0.0;
-
-            LLResult result = (limelight != null) ? limelight.getLatestResult() : null;
-            if (result != null && result.isValid()) {
-                List<LLResultTypes.FiducialResult> fiducials = result.getFiducialResults();
-                if (fiducials != null) {
-                    for (LLResultTypes.FiducialResult f : fiducials) {
-                        telemetry.addData("detection", f.getFiducialId());
-                        int id = f.getFiducialId();
-                        if (id == 20 || id == 21 || id == 24) {
-                            yawErrDeg = f.getTargetXDegrees();
-                            boolean havePoseRange = false;
-                            Pose3D tagPoseRobot = f.getTargetPoseRobotSpace();
-                            if (tagPoseRobot != null) {
-                                double xM = tagPoseRobot.getPosition().x;
-                                double yM = tagPoseRobot.getPosition().y;
-                                double zM = tagPoseRobot.getPosition().z;
-                                tagRobotZIn = zM * 39.3701;
-                                double distM = Math.sqrt(xM*xM + yM*yM + zM*zM);
-                                distIn = distM * 39.3701;
-                                havePoseRange = distIn > 1.0;
-                                telemetry.addData("apriltagX", xM);
-                                telemetry.addData("apriltagY", yM);
-                                telemetry.addData("apriltagZ", zM);
-                                telemetry.addData("yawErr", yawErrDeg);
-                            }
-
-                            if (!havePoseRange) {
-                                distIn = DEFAULT_TAG_RANGE_IN;
-                            }
-
-                            // Build robot-relative target using tx bearing and range.
-                            double bearingCamRad = Math.toRadians(TX_TO_ROBOT_LEFT_SIGN * yawErrDeg);
-                            double tagCamX = distIn * Math.cos(bearingCamRad); // forward from camera
-                            double tagCamY = distIn * Math.sin(bearingCamRad); // left from camera
-
-                            double c = Math.cos(LL_YAW_RAD);
-                            double s = Math.sin(LL_YAW_RAD);
-                            tagRobotXIn = LL_X_IN + (tagCamX * c - tagCamY * s);
-                            tagRobotYIn = LL_Y_IN + (tagCamX * s + tagCamY * c);
-
-                            // Save absolute field location for continued tracking after tag loss.
-                            // Even if distance is fallback-estimated, this keeps "perma tracking"
-                            // behavior alive after first sighting.
-                            double rh = robotPos.heading.toDouble();
-                            double ch = Math.cos(rh);
-                            double sh = Math.sin(rh);
-                            lastTagFieldX = robotPos.position.x + (tagRobotXIn * ch - tagRobotYIn * sh);
-                            lastTagFieldY = robotPos.position.y + (tagRobotXIn * sh + tagRobotYIn * ch);
-                            hasLastTagField = true;
-
-                            lastTagRobotZIn = tagRobotZIn;
-                            hasLastTagZ = true;
-
-                            tagSeen = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (turret != null) {
-                boolean memoryTrackingActive = false;
-                if (tagSeen) {
-                    turret.updateVisionMeasurement(tagRobotXIn, tagRobotYIn, tagRobotZIn, yawErrDeg, true);
-                } else if (hasLastTagField) {
-                    // Field -> robot transform (x forward, y left).
-                    double dx = lastTagFieldX - robotPos.position.x;
-                    double dy = lastTagFieldY - robotPos.position.y;
-                    double rh = robotPos.heading.toDouble();
-                    double ch = Math.cos(rh);
-                    double sh = Math.sin(rh);
-                    double targetRobotX =  dx * ch + dy * sh;
-                    double targetRobotY = -dx * sh + dy * ch;
-                    double zHold = hasLastTagZ ? lastTagRobotZIn : 0.0;
-                    turret.setTargetRobotRelative(targetRobotX, targetRobotY, zHold);
-                    turret.updateVisionMeasurement(0.0, 0.0, 0.0, 0.0, false);
-                    memoryTrackingActive = true;
-                } else {
-                    // No vision and nothing remembered
-                    turret.updateVisionMeasurement(0.0, 0.0, 0.0, 0.0, false);
-                }
-
-                turret.update();
-                telemetry.addData("trackMode", tagSeen ? "VISION" : (memoryTrackingActive ? "MEMORY" : "NONE"));
-                telemetry.addData("turretFrozen", turret.isFrozen() ? "YES" : "NO");
-            }
-
-            telemetry.addData("tagMemory", hasLastTagField ? "YES" : "NO");
-            telemetry.addData("tagZHold", hasLastTagZ ? String.format("%.1f in", lastTagRobotZIn) : "NO");
-            if (hasLastTagField) {
-                telemetry.addData("lastTagField", "x=%.1f y=%.1f", lastTagFieldX, lastTagFieldY);
-            }
             // Telemetry updates
             telemetry.addData("drive", "x=%.2f y=%.2f h=%.2f", x, y, h);
             telemetry.addData("pattern", patternName);
@@ -464,12 +335,9 @@ if (xPressed && turret != null) {
             telemetry.addData("txUsedDeg", "%.2f", turret.rawTxUsedDeg());
             telemetry.addData("pitchCmd", "%.3f", turret.rawPitchCmd());
             telemetry.addData("pitchDesired", "%.3f", turret.rawPitchDesired());
-            telemetry.addData("tagSeen", tagSeen);
-            telemetry.addData("tagDistIn", "%.1f", distIn);
             telemetry.addData("turretYawOffsetDeg", "%.1f", turret.yawRobotForwardOffsetDeg);
             telemetry.addData("yawEncDegPerRev", "%.4f", turret.yawEncoderDegPerRev);
             telemetry.addData("tune", "up/down=encDegPerRev left/right=offset");
-            telemetry.addData("distance", distIn);
             telemetry.update();
 
             idle();
