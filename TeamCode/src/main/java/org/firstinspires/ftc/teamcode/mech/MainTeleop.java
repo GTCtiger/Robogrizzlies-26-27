@@ -4,10 +4,8 @@ import com.acmerobotics.roadrunner.Pose2d;
 import com.qualcomm.hardware.rev.RevColorSensorV3;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
-import com.qualcomm.robotcore.hardware.CRServo;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
-import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.util.ElapsedTime;
 import com.qualcomm.robotcore.hardware.PIDFCoefficients;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
@@ -36,7 +34,6 @@ public class MainTeleop extends LinearOpMode {
 
     // Hardware maps
     private movement drive;
-    private CRServo bottomFlywheel, topFlywheel;
     private DcMotorEx backIntake, middleIntake, frontIntake, launcher;
 
     //z Ball tracking
@@ -83,7 +80,7 @@ public class MainTeleop extends LinearOpMode {
     private static final long STABLE_MS = 100;           // must be at speed this long before feeding
     private static final double RPM_TOL_FRAC = 0.05;     // +/-3% window around target
 
-    // Feeder behavior (CRServos that push ball into launcher)
+    // Feeder behavior (intermediate intakes that push a ball into the launcher)
     private static final double FEED_POWER = 1.0;       // tune (0.6–1.0)
     private static final long FEED_MS = 3000;
 
@@ -158,8 +155,6 @@ public class MainTeleop extends LinearOpMode {
         // Init
         drive = new movement(this, 0, 0, 0);
 
-        bottomFlywheel = hardwareMap.get(CRServo.class, "bottomFlywheel");
-        topFlywheel = hardwareMap.get(CRServo.class, "topFlywheel");
         launcher = hardwareMap.get(DcMotorEx.class, "launcher");
         backIntake = hardwareMap.get(DcMotorEx.class, "backIntake");
         middleIntake = hardwareMap.get(DcMotorEx.class, "middleIntake");
@@ -245,16 +240,22 @@ public class MainTeleop extends LinearOpMode {
 
             if (rB) {
                 frontIntake.setPower(1);
-                middleIntake.setPower(1);
-                backIntake.setPower(1);
+                if (!outtaking) {
+                    middleIntake.setPower(1);
+                    backIntake.setPower(1);
+                }
             } else if (lB) {
                 frontIntake.setPower(-1);
-                middleIntake.setPower(1);
-                backIntake.setPower(-1);
+                if (!outtaking) {
+                    middleIntake.setPower(1);
+                    backIntake.setPower(-1);
+                }
             } else {
                 frontIntake.setPower(0);
-                middleIntake.setPower(1);
-                backIntake.setPower(0);
+                if (!outtaking) {
+                    middleIntake.setPower(1);
+                    backIntake.setPower(0);
+                }
             }
 
             if (spintime.milliseconds() > 100 && rotated) {
@@ -598,8 +599,8 @@ public class MainTeleop extends LinearOpMode {
 
                 if (stableEnough || timedOut) {
                     // Feed one ball into the launcher
-                    bottomFlywheel.setPower(FEED_POWER);
-                    topFlywheel.setPower(FEED_POWER);
+                    backIntake.setPower(FEED_POWER);
+                    middleIntake.setPower(FEED_POWER);
 
                     shootTimer.reset();
                     shootState = ShootState.FIRE;
@@ -613,8 +614,8 @@ public class MainTeleop extends LinearOpMode {
 
             case FIRE: {
                 if (shootTimer.milliseconds() >= FEED_MS) {
-                    bottomFlywheel.setPower(0);
-                    topFlywheel.setPower(0);
+                    backIntake.setPower(0);
+                    middleIntake.setPower(0);
 
                     shootTimer.reset();
                     shootState = ShootState.RECOVER;
@@ -645,8 +646,8 @@ public class MainTeleop extends LinearOpMode {
         launcherControlEnabled = false;
         launcherTargetTicksPerSec = 0.0;
         launcher.setPower(0.0);
-        bottomFlywheel.setPower(0.0);
-        topFlywheel.setPower(0.0);
+        backIntake.setPower(0.0);
+        middleIntake.setPower(0.0);
     }
 
 }
