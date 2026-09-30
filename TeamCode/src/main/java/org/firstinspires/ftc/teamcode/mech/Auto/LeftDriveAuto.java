@@ -3,6 +3,7 @@ package org.firstinspires.ftc.teamcode.mech.Auto;
 import com.acmerobotics.dashboard.telemetry.TelemetryPacket;
 import com.acmerobotics.roadrunner.Action;
 import com.acmerobotics.roadrunner.Pose2d;
+import com.acmerobotics.roadrunner.PoseVelocity2d;
 import com.acmerobotics.roadrunner.SequentialAction;
 import com.acmerobotics.roadrunner.TranslationalVelConstraint;
 import com.acmerobotics.roadrunner.Vector2d;
@@ -12,16 +13,13 @@ import com.qualcomm.hardware.limelightvision.LLResultTypes;
 import com.qualcomm.hardware.limelightvision.Limelight3A;
 import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
-import com.qualcomm.robotcore.hardware.CRServo;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
-import com.qualcomm.robotcore.hardware.DcMotorSimple;
-import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.util.ElapsedTime;
 
 import org.firstinspires.ftc.robotcore.external.navigation.Pose3D;
 import org.firstinspires.ftc.teamcode.mech.control.CustomPIDF;
-import org.firstinspires.ftc.teamcode.mech.control.TurretController;
+import org.firstinspires.ftc.teamcode.mech.control.ChassisAimController;
 
 import java.util.List;
 
@@ -87,17 +85,15 @@ public class LeftDriveAuto extends LinearOpMode {
         }
     }
     private static final class RobotHW {
-        final CRServo bottomFlywheel, topFlywheel;
         // final Servo spindexer; // disabled
 
         // runtime fields
         static double currentTargetVel = 0.0;
-        final DcMotor backIntake, frontIntake;
+        final DcMotor backIntake, middleIntake, frontIntake;
         final DcMotorEx launcher;
-        final CRServo turretYaw;
-        final Servo turretPitch;
-        final TurretController turret;
+        final ChassisAimController aim;
         final Limelight3A limelight;
+        long lastVisionTimestamp = 0;
         final CustomPIDF launcherPIDF;
         final ElapsedTime launcherLoopTimer = new ElapsedTime();
         final double launcherTicksPerRev;
@@ -106,19 +102,16 @@ public class LeftDriveAuto extends LinearOpMode {
 
         RobotHW(LinearOpMode opMode) {
             backIntake = opMode.hardwareMap.get(DcMotor.class, "backIntake");
+            middleIntake = opMode.hardwareMap.get(DcMotor.class, "middleIntake");
             frontIntake = opMode.hardwareMap.get(DcMotor.class, "frontIntake");
             launcher = opMode.hardwareMap.get(DcMotorEx.class, "launcher");
             launcher.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
             launcher.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
             launcher.setZeroPowerBehavior(DcMotorEx.ZeroPowerBehavior.FLOAT);
 
-            bottomFlywheel = opMode.hardwareMap.get(CRServo.class, "bottomFlywheel");
-            topFlywheel = opMode.hardwareMap.get(CRServo.class, "topFlywheel");
             // spindexer = opMode.hardwareMap.get(Servo.class, "spindexer");
 
-            turretYaw = opMode.hardwareMap.get(CRServo.class, "turretYaw");
-            turretPitch = opMode.hardwareMap.get(Servo.class, "turretPitch");
-            turret = new TurretController(turretYaw, turretPitch);
+            aim = new ChassisAimController();
             limelight = opMode.hardwareMap.get(Limelight3A.class, "limelight");
             limelight.setPollRateHz(100);
             limelight.start();
@@ -140,18 +133,14 @@ public class LeftDriveAuto extends LinearOpMode {
             frontIntake.setPower(pwr);
         }
 
-        void stopFlywheels() {
-            // Keep directions consistent; power=0 is what matters
-            bottomFlywheel.setPower(0);
-            topFlywheel.setPower(0);
+        void stopIntermediateIntakes() {
+            backIntake.setPower(0);
+            middleIntake.setPower(0);
         }
 
-        void startFlywheelsForShooting() {
-            // Same intent as your code: left forward, right reverse
-            bottomFlywheel.setDirection(DcMotorSimple.Direction.FORWARD);
-            topFlywheel.setDirection(DcMotorSimple.Direction.REVERSE);
-            bottomFlywheel.setPower(1);
-            topFlywheel.setPower(1);
+        void startIntermediateIntakesForShooting() {
+            backIntake.setPower(1);
+            middleIntake.setPower(1);
         }
 
         void setLauncherRPM(double rpm) {
@@ -319,7 +308,7 @@ public class LeftDriveAuto extends LinearOpMode {
     }
     private enum Phase { START_BALL, AIM, SPINUP, FIRE, ADVANCE, DONE }
 
-    private static Action shootThreeBalls(RobotHW hw) {
+    private static Action shootThreeBalls(RobotHW hw, MecanumDrive drive) {
         return new Action() {
             private Phase phase = Phase.START_BALL;
             private int ballIndex = 0;
@@ -341,21 +330,24 @@ public class LeftDriveAuto extends LinearOpMode {
                         // Start launcher and set initial spindex position for this ball
                         hw.setLauncherRPM((ballIndex == 0) ? Config.TARGET_RPM_FIRST : Config.TARGET_RPM_NEXT);
                         // hw.spindexer.setPosition(Config.SPINDEX_OUTTAKE[ballIndex]);
-                        hw.stopFlywheels();
+                        hw.stopIntermediateIntakes();
 
                         phase = Phase.AIM;;
                         resetTimer();
                         return true;
                     }
                 case AIM: {
+                    drive.updatePoseEstimate();
+                    Pose2d pose = drive.localizer.getPose();
                     boolean tagSeen = false;
                     double yawErrDeg = 0.0;
                     double xIn = 0.0;
                     double yIn = 0.0;
-                    double zIn = 0.0;
 
                     LLResult result = (hw.limelight != null) ? hw.limelight.getLatestResult() : null;
-                    if (result != null && result.isValid()) {
+                    if (result != null && result.isValid() && result.getStaleness() < 250
+                            && result.getControlHubTimeStamp() > hw.lastVisionTimestamp) {
+                        hw.lastVisionTimestamp = result.getControlHubTimeStamp();
                         List<LLResultTypes.FiducialResult> fiducials = result.getFiducialResults();
                         if (fiducials != null) {
                             for (LLResultTypes.FiducialResult f : fiducials) {
@@ -363,14 +355,16 @@ public class LeftDriveAuto extends LinearOpMode {
                                 if (id == 20 || id == 21 || id == 24) {
                                     yawErrDeg = f.getTargetXDegrees();
                                     Pose3D tagPoseRobot = f.getTargetPoseRobotSpace();
+                                    double rangeIn = 48.0;
                                     if (tagPoseRobot != null) {
                                         double xM = tagPoseRobot.getPosition().x;
                                         double yM = tagPoseRobot.getPosition().y;
                                         double zM = tagPoseRobot.getPosition().z;
-                                        xIn = xM * 39.3701;
-                                        yIn = yM * 39.3701;
-                                        zIn = zM * 39.3701;
+                                        double measuredRangeIn = Math.sqrt(xM*xM + yM*yM + zM*zM) * 39.3701;
+                                        if (measuredRangeIn > 1.0) rangeIn = measuredRangeIn;
                                     }
+                                    xIn = rangeIn * Math.cos(Math.toRadians(-yawErrDeg));
+                                    yIn = 8.0 + rangeIn * Math.sin(Math.toRadians(-yawErrDeg));
                                     tagSeen = true;
                                     break;
                                 }
@@ -378,11 +372,11 @@ public class LeftDriveAuto extends LinearOpMode {
                         }
                     }
 
-                    if (hw.turret != null) {
-                        hw.turret.updateVisionMeasurement(xIn, yIn, zIn, yawErrDeg, tagSeen);
-                        hw.turret.update();
-                    }
-                    if (hw.turret.isAimed() || phaseTimer.seconds() > 1.5) {
+                    hw.aim.updateVisionMeasurement(xIn, yIn, tagSeen, pose);
+                    double turn = hw.aim.update(pose);
+                    drive.setDrivePowers(new PoseVelocity2d(new Vector2d(0, 0), turn));
+                    if (hw.aim.isAimed() || phaseTimer.seconds() > 1.5) {
+                        drive.setDrivePowers(new PoseVelocity2d(new Vector2d(0, 0), 0));
                         phase = Phase.SPINUP;
                         resetTimer();
                     }
@@ -401,7 +395,7 @@ public class LeftDriveAuto extends LinearOpMode {
 
                     case FIRE: {
                         // Run flywheels during the fire window
-                        hw.startFlywheelsForShooting();
+                        hw.startIntermediateIntakesForShooting();
 
                         if (phaseTimer.seconds() < Config.FIRE_WINDOW_SEC) return true;
 
@@ -411,7 +405,7 @@ public class LeftDriveAuto extends LinearOpMode {
                     }
 
                     case ADVANCE: {
-                        hw.stopFlywheels();
+                        hw.stopIntermediateIntakes();
 
                         if (ballIndex < 2) {
                             ballIndex++;
@@ -426,7 +420,7 @@ public class LeftDriveAuto extends LinearOpMode {
                     }
 
                     case DONE: {
-                        hw.stopFlywheels();
+                        hw.stopIntermediateIntakes();
                         hw.stopLauncherControl();
                         // hw.spindexer.setPosition(Config.SPINDEX_OUTTAKE[0]);
                         return false;
