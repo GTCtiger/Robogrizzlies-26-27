@@ -3,6 +3,7 @@ package org.firstinspires.ftc.teamcode.mech.arm;
 import com.acmerobotics.dashboard.config.Config;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.HardwareMap;
+
 @Config
 public class motor {
     private DcMotor m;
