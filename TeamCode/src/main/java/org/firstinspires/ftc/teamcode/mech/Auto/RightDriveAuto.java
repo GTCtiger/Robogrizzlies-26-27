@@ -3,6 +3,7 @@ package org.firstinspires.ftc.teamcode.mech.Auto;
 import com.acmerobotics.roadrunner.Action;
 import com.acmerobotics.roadrunner.Pose2d;
 import com.acmerobotics.roadrunner.SequentialAction;
+import com.acmerobotics.roadrunner.TranslationalVelConstraint;
 import com.acmerobotics.roadrunner.Vector2d;
 import com.acmerobotics.roadrunner.ftc.Actions;
 import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
@@ -18,10 +19,14 @@ public class RightDriveAuto extends LinearOpMode {
     private static final double TURN_DEGREES = 90.0;
     private static final Pose2d START_POSE = new Pose2d(12, -60, Math.toRadians(90));
 
+    private static final Pose2d SHOOT_POSE = new Pose2d(67, -67, Math.toRadians(67));
+    private static final double MOTION_VEL = 70.0;
+
     @Override
     public void runOpMode() throws InterruptedException {
         MecanumDrive drive = new MecanumDrive(hardwareMap, START_POSE);
         BasicShooter shooter = new BasicShooter(hardwareMap);
+        TranslationalVelConstraint motionVel = new TranslationalVelConstraint(MOTION_VEL);
         try {
             // At a 90 degree heading, forward is field +Y and robot-left is field -X.
             Vector2d start = START_POSE.position;
@@ -49,16 +54,11 @@ public class RightDriveAuto extends LinearOpMode {
                 }
             };
             Action remainingMoves = drive.actionBuilder(shootPose)
-                    .strafeTo(start)                  // go back to where we started
-                    .waitSeconds(0.25)
-                    .strafeTo(left)                   // move left
-                    .waitSeconds(0.25)
-                    .strafeTo(right)                  // move right, past the start
-                    .waitSeconds(0.25)
-                    .strafeTo(start)                  // move left to get back to the start
-                    .turn(Math.toRadians(TURN_DEGREES))   // turn left
-                    .waitSeconds(0.25)
-                    .turn(Math.toRadians(-TURN_DEGREES))  // turn right to face the same way as before
+                    //.turn(Math.toRadians(-TURN_DEGREES)
+ //                   .strafeToLinearHeading(SHOOT_POSE, motionVel)
+                    .splineToLinearHeading(START_POSE, Math.toRadians(0))
+                    .splineToLinearHeading(START_POSE, Math.toRadians(0))
+                    // turn right to face the same way as before
                     .build();
             Action autonomous = new SequentialAction(moveForward, shoot, remainingMoves);
 
