@@ -17,9 +17,9 @@ public class RightDriveAuto extends LinearOpMode {
     private static final double FORWARD_INCHES = 5;
     private static final double STRAFE_INCHES = 5;
     private static final double TURN_DEGREES = 90.0;
-    private static final Pose2d START_POSE = new Pose2d(12, -60, Math.toRadians(90));
+    private static final Pose2d START_POSE = new Pose2d(0, 0, Math.toRadians(90));
 
-    private static final Pose2d SHOOT_POSE = new Pose2d(67, -67, Math.toRadians(67));
+    private static final Pose2d SHOOT_POSE = new Pose2d(0, 5, Math.toRadians(90));
     private static final double MOTION_VEL = 70.0;
 
     @Override
@@ -56,7 +56,6 @@ public class RightDriveAuto extends LinearOpMode {
             Action remainingMoves = drive.actionBuilder(shootPose)
                     //.turn(Math.toRadians(-TURN_DEGREES)
  //                   .strafeToLinearHeading(SHOOT_POSE, motionVel)
-                    .splineToLinearHeading(START_POSE, Math.toRadians(0))
                     .splineToLinearHeading(START_POSE, Math.toRadians(0))
                     // turn right to face the same way as before
                     .build();
