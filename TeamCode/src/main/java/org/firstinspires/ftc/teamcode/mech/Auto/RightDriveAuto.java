@@ -17,9 +17,11 @@ public class RightDriveAuto extends LinearOpMode {
     private static final double FORWARD_INCHES = 5;
     private static final double STRAFE_INCHES = 5;
     private static final double TURN_DEGREES = 90.0;
-    private static final Pose2d START_POSE = new Pose2d(0, 0, Math.toRadians(90));
 
-    private static final Pose2d SHOOT_POSE = new Pose2d(0, 5, Math.toRadians(90));
+    //start pose based off 18x18 robot, and also red alliance. If blue then -12, 63, Math.toRadians(270)
+    private static final Pose2d START_POSE = new Pose2d(-12, -63, Math.toRadians(90));
+
+    private static final Pose2d SHOOT_POSE = new Pose2d(-12, -58, Math.toRadians(90));
     private static final double MOTION_VEL = 70.0;
 
     @Override
@@ -37,6 +39,12 @@ public class RightDriveAuto extends LinearOpMode {
 
             Action moveForward = drive.actionBuilder(START_POSE)
                     .strafeTo(forward)
+                    .splineToLinearHeading(
+                            new Pose2d(-17, -58, Math.toRadians(90)), Math.toRadians(180)
+                    )
+                    .splineToLinearHeading(
+                            new Pose2d(-12, -58, Math.toRadians(90)), Math.toRadians(0)
+                    )
                     .build();
             Action shoot = new Action() {
                 private boolean started;
@@ -61,9 +69,8 @@ public class RightDriveAuto extends LinearOpMode {
                     .build();
             Action autonomous = new SequentialAction(moveForward, shoot, remainingMoves);
 
-            telemetry.addLine("Forward 28 in -> shoot -> backward 28 in");
-            telemetry.addLine("Left 12 -> right 24 -> left 12 in");
-            telemetry.addLine("Turn 90 degrees CCW, then 90 degrees CW");
+            telemetry.addLine("Move forward 5 inches");
+            telemetry.addLine("Shoot, then spline back to the start");
             telemetry.update();
             waitForStart();
             if (isStopRequested()) return;
