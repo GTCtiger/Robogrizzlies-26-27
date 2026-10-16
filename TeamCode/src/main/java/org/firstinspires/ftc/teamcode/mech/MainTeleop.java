@@ -106,9 +106,9 @@ public class MainTeleop extends LinearOpMode {
     private Pose2d robotPos;
 
     // tune values
-    private static double LAUNCH_kP = 0.005;
-    private static double LAUNCH_kI = 0.00005;
-    private static double LAUNCH_kD = 0.00003;
+    private static double LAUNCH_kP = 0.07;
+    private static double LAUNCH_kI = 0.0001;
+    private static double LAUNCH_kD = 0.0001;
 
     // kF will be computed from motor max speed at init, but you can override if you want:
     private static double LAUNCH_kF = -1.0; // -1 = auto compute
@@ -119,9 +119,9 @@ public class MainTeleop extends LinearOpMode {
 
     // TODO: Measure these offsets
     private static final double LL_X_IN = 0.0;
-    private static final double LL_Y_IN = 8.0;
+    private static final double LL_Y_IN = 0.0;
     // Limelight yaw relative to robot forward (radians). Forward-facing = 0.
-    private static final double LL_YAW_RAD = 0.0;
+    private static final double LL_YAW_RAD = 0;
     // Limelight tx is typically +right. Robot frame here uses +left.
     private static final double TX_TO_ROBOT_LEFT_SIGN = -1.0;
     // Used only when pose range is unavailable for a detected tag.
@@ -304,7 +304,7 @@ public class MainTeleop extends LinearOpMode {
                     for (LLResultTypes.FiducialResult f : fiducials) {
                         telemetry.addData("detection", f.getFiducialId());
                         int id = f.getFiducialId();
-                        if (id == 20 || id == 21 || id == 24) {
+                        if (id >= 20) {
                             yawErrDeg = f.getTargetXDegrees();
                             boolean havePoseRange = false;
                             Pose3D tagPoseRobot = f.getTargetPoseRobotSpace();

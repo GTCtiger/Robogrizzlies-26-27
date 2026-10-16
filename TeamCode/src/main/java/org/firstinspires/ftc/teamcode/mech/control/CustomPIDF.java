@@ -84,7 +84,7 @@ public double ZiegerZichloas(double targetTicksPerSec, double measuredTicksPerSe
     }
 
     public double update(double targetTicksPerSec, double measuredTicksPerSec, double dtSec) {
-        if (dtSec <= 1e-6) dtSec = 1e-3;
+        if (dtSec <= 1e-5) dtSec = 1e-5;
 
         double error = targetTicksPerSec - measuredTicksPerSec;
 
@@ -112,7 +112,7 @@ public double ZiegerZichloas(double targetTicksPerSec, double measuredTicksPerSe
 
     // position holding
     public double updatePosition(double targetTicks, double measuredTicks, double dtSec) {
-        if (dtSec <= 1e-6) dtSec = 1e-3;
+        if (dtSec <= 1e-5) dtSec = 1e-5;
 
         double error = targetTicks - measuredTicks;
 
