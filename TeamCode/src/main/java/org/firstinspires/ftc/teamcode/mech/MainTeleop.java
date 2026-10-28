@@ -241,19 +241,19 @@ public class MainTeleop extends LinearOpMode {
             if (rB) {
                 frontIntake.setPower(1);
                 if (!outtaking) {
-                    middleIntake.setPower(1);
+                    middleIntake.setPower(-1);
                     backIntake.setPower(1);
                 }
             } else if (lB) {
                 frontIntake.setPower(-1);
                 if (!outtaking) {
                     middleIntake.setPower(1);
-                    backIntake.setPower(-1);
+                    backIntake.setPower(0);
                 }
             } else {
                 frontIntake.setPower(0);
                 if (!outtaking) {
-                    middleIntake.setPower(1);
+                    middleIntake.setPower(0);
                     backIntake.setPower(0);
                 }
             }
