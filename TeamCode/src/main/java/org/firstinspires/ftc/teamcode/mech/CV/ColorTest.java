@@ -1,31 +1,30 @@
 package org.firstinspires.ftc.teamcode.mech.CV;
 
-import org.firstinspires.ftc.robotcore.external.Telemetry;
-import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 //import com.acmerobotics.dashboard.config.Config;
 import com.qualcomm.hardware.rev.RevColorSensorV3;
-import org.firstinspires.ftc.teamcode.mech.movement.goBuildaPinPointDriver.GoBildaPinpointDriver;
-import org.firstinspires.ftc.teamcode.mech.movement.goBuildaPinPointDriver.Pose2D;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
-
-@TeleOp(name="Color Test")
+import com.qualcomm.robotcore.hardware.DistanceSensor;
+@TeleOp(name = "Color and Distance Test")
 public class ColorTest extends LinearOpMode {
-    RevColorSensorV3 color;
+    @Override
+    public void runOpMode() {
+        RevColorSensorV3 colorSensor = hardwareMap.get(RevColorSensorV3.class, "colorSensor");
 
-    @Override public void runOpMode() {
-        color = hardwareMap.get(RevColorSensorV3.class, "colorSensor");
-        color.enableLed(true);
+        DistanceSensor distanceSensor = hardwareMap.get(DistanceSensor.class, "distanceSensor1");
 
+        colorSensor.enableLed(true);
         waitForStart();
 
         while (opModeIsActive()) {
-            telemetry.addData("R", color.red());
-            telemetry.addData("G", color.green());
-            telemetry.addData("B", color.blue());
-            telemetry.addData("A", color.alpha());
+            telemetry.addData("R", colorSensor.red());
+            telemetry.addData("G", colorSensor.green());
+            telemetry.addData("B", colorSensor.blue());
+
+            telemetry.addData("Distance 1 (cm)", distanceSensor.getDistance(DistanceUnit.CM));
             telemetry.update();
         }
     }
 }
+//link up both sensors, one for 2 color sensors, one for a color sensor and 2 distance to check rad of ball.
