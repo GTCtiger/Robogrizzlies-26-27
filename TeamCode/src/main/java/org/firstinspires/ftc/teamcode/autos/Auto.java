@@ -14,6 +14,9 @@ import com.pedropathing.paths.Path;
 import com.pedropathing.ivy.Scheduler;
 
 import static com.pedropathing.ivy.Scheduler.schedule;
+import static com.pedropathing.ivy.commands.Commands.instant;
+import static com.pedropathing.ivy.commands.Commands.waitMs;
+import static com.pedropathing.ivy.commands.Commands.waitUntil;
 import static com.pedropathing.ivy.pedro.PedroCommands.follow;
 import com.pedropathing.ivy.Command;
 import com.pedropathing.ivy.Scheduler;
@@ -28,13 +31,16 @@ import static com.pedropathing.ivy.pedro.PedroCommands.follow;
 @Autonomous
 public class Auto extends OpMode {
     private DcMotor frontIntake;
+    private DcMotor middleIntake;
+    private DcMotor backIntake;
+    private DcMotor launcher;
 
     private Follower follower;
     private final PoseFactory p = PoseFactory.degrees();
 
     private final Pose startPose = p.of(59, 8.75, 90);
     private final Pose controlPose1 = p.of(24, 70, 0);
-    private final Pose intakePose = p.of(10, 8.5, 270);
+    private final Pose intakePose = p.of(10, 8, 270);
 
     private final Pose controlPose2 = p.of(21, 118, 0);
     private final Pose controlPose3 = p.of(61, 111, 0);
@@ -46,18 +52,34 @@ public class Auto extends OpMode {
         return curve(startPose, controlPose1, intakePose).tangent();
     }
 
-    private Path shoot() {
+    private Path shoot () {
         return curve(intakePose, controlPose2, controlPose3, shootPose).heading(Interpolator.linear(intakePose, shootPose));
     }
     private Path park() {
         return curve(shootPose, controlPose4, parkPose).heading(Interpolator.linear(intakePose, shootPose));
     }
+   private Command launch() {
+        return sequential(
+        instant(() -> launcher.setPower(1)),
+        waitMs(500),
+        instant(() -> middleIntake.setPower(1)),
+        instant(() -> backIntake.setPower(-1)),
+        waitMs(2000),
+        instant(() -> middleIntake.setPower(0)),
+        instant(() -> backIntake.setPower(0)),
+        instant(() -> launcher.setPower(0))
+        );
+    }
 
     private Command autoRoutine() {
         return sequential(
-                follow(follower, intake()),
-                follow(follower, shoot()),
-                follow(follower, park())
+        launch(),
+        follow(follower, intake()).with(waitUntil(() -> follower.completion() >= 0.5).then(instant(() -> frontIntake.setPower(-1)))),
+        waitMs(2000),
+        instant(() -> frontIntake.setPower(0)),
+        follow(follower, shoot()),
+        launch(),
+        follow(follower, park())
         );
     }
 
@@ -70,7 +92,11 @@ public class Auto extends OpMode {
         follower.update();
 
         frontIntake = hardwareMap.get(DcMotor.class, "frontIntake");
+        middleIntake = hardwareMap.get(DcMotor.class, "middleIntake");
+        backIntake = hardwareMap.get(DcMotor.class, "backIntake");
+        launcher = hardwareMap.get(DcMotor.class, "launcher");
     }
+
 
     @Override
     public void start() {
