@@ -68,7 +68,7 @@ public class MainTeleop extends LinearOpMode {
     // Launcher encoder/velocity tuning
     private static final double LAUNCHER_TICKS_PER_REV = 28.0;
     // target RPMs (tune these)
-    private static final double TARGET_RPM = 700.0;
+    private static final double TARGET_RPM = 500.0;
 
     // Battery + launcher velocity compensation
     private static final double NOMINAL_VOLTAGE = 12.0;
@@ -106,12 +106,12 @@ public class MainTeleop extends LinearOpMode {
     private Pose2d robotPos;
 
     // tune values
-    private static double LAUNCH_kP = 0.07;
-    private static double LAUNCH_kI = 0.0001;
-    private static double LAUNCH_kD = 0.0001;
+    private static double LAUNCH_kP = 0.0003;
+    private static double LAUNCH_kI = 0.00007;
+    private static double LAUNCH_kD = 0.00007;
 
     // kF will be computed from motor max speed at init, but you can override if you want:
-    private static double LAUNCH_kF = -1.0; // -1 = auto compute
+    private static double LAUNCH_kF = 0.0; // -1 = auto compute
 
     // Limelight AprilTag detection
     private Limelight3A limelight;
@@ -199,7 +199,7 @@ public class MainTeleop extends LinearOpMode {
         // Max ticks/sec = maxRPM * ticksPerRev / 60
         double maxRpm = launcher.getMotorType().getMaxRPM();
         double maxTicksPerSec = (maxRpm * launcherTicksPerRev) / 60.0;
-        double kF = calculateLauncherKF(LAUNCH_kF, maxTicksPerSec);
+        double kF = LAUNCH_kF;
 
         launcherPIDF = new CustomPIDF(LAUNCH_kP, LAUNCH_kI, LAUNCH_kD, kF);
         launcherPIDF.iMax = 0.35; // clamp integral contribution (power units)
@@ -493,57 +493,6 @@ public class MainTeleop extends LinearOpMode {
         double err = Math.abs(rpm - targetRpm);
         return err <= (RPM_TOL_FRAC * targetRpm);
     }
-    private void findKp(){
-        if (!launcherControlEnabled) return;
-
-        double dt = launcherLoopTimer.seconds();
-        launcherLoopTimer.reset();
-
-        double measured = launcher.getVelocity(); // ticks/sec
-        double target = launcherTargetTicksPerSec;
-
-        double power = launcherPIDF.ZiegerZichloas(target, measured, dt);
-        double period = 0;
-
-        telemetry.addData("Error_Oscillation", "CustomPIDF.oscillation=%.3f",launcherPIDF.oscillationratio);
-        telemetry.addData("Ku",Kp);
-        if(launcherPIDF.oscillationratio<0.01){
-            if(launcherPIDF.errorlist.size()>1000){
-                int j = launcherPIDF.errorlist.indexOf(Collections.max(launcherPIDF.errorlist));
-                int k = 0;
-                for(int i=0;i<launcherPIDF.errorlist.size();i++){
-                    if((launcherPIDF.errorlist.get(j)+.01)>launcherPIDF.errorlist.get(i) && (launcherPIDF.errorlist.get(j)-.01)<launcherPIDF.errorlist.get(i)){
-                        k = i;
-                    }
-                }
-                for(int i=k;i<launcherPIDF.errorlist.size();i++){
-                    if((launcherPIDF.errorlist.get(k)+.01)>launcherPIDF.errorlist.get(i) && (launcherPIDF.errorlist.get(k)-.01)<launcherPIDF.errorlist.get(i)){
-                        double frequency = 1/Math.abs((launcherPIDF.timelist.get(i)-launcherPIDF.timelist.get(k)));
-                        period = 2*3.14/frequency;
-                        break;
-                    }
-                }
-                telemetry.addData("Error_Oscillation", "CustomPIDF.oscillation=%.3f",launcherPIDF.oscillationratio);
-                telemetry.addData("Ku", Kp);
-                telemetry.addData("Pu", "Period=%.3f",period);
-                telemetry.addLine("Ku found, testing over");
-                stopShooter();
-            }
-        } else{
-            if(launcherPIDF.errorlist.size()>10){
-                Kp+=0.001;
-                launcherPIDF = new CustomPIDF(Kp, LAUNCH_kI, LAUNCH_kD, launcherPIDF.kF);
-            }
-        }
-        // Optional: voltage compensation (helps keep behavior consistent)
-        double scale = NOMINAL_VOLTAGE / batteryVoltage();
-        power = Range.clip(power, -1.0, 1.0);
-
-        launcher.setPower(power);
-
-        telemetry.addData("L PID", "t=%.0f m=%.0f pwr=%.2f dt=%.3f",
-                target, measured, power, dt);
-    }
     private void updateLauncherPIDF() {
         if (!launcherControlEnabled) return;
 
@@ -599,7 +548,7 @@ public class MainTeleop extends LinearOpMode {
 
                 if (stableEnough || timedOut) {
                     // Feed one ball into the launcher
-                    backIntake.setPower(FEED_POWER);
+                    backIntake.setPower(-FEED_POWER);
                     middleIntake.setPower(FEED_POWER);
 
                     shootTimer.reset();
