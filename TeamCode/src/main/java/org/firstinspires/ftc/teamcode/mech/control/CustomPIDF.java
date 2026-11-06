@@ -10,9 +10,11 @@ import java.lang.Math;
  */
 public class CustomPIDF {
     public double kP, kI, kD, kF;
+    public double kS = 0.0;            // static-friction feedforward (power), applied in the direction of target
 
     // safety
     public double iMax = 0.4;          // max magnitude of integral contribution
+    public double iZone = Double.POSITIVE_INFINITY; // only integrate while |error| < iZone
     public double outputMin = -1.0;
     public double outputMax =  1.0;
 
@@ -84,13 +86,21 @@ public double ZiegerZichloas(double targetTicksPerSec, double measuredTicksPerSe
     }
 
     public double update(double targetTicksPerSec, double measuredTicksPerSec, double dtSec) {
-        if (dtSec <= 1e-5) dtSec = 1e-5;
+        if (dtSec <= 1e-5) dtSec = 1e-3;
 
         double error = targetTicksPerSec - measuredTicksPerSec;
 
 
-        // Integral with clamp
-        integral += error * dtSec;
+        // Integral with anti-windup: skip accumulation far from target, and clamp the
+        // stored state (not just the output term) so it can't build up past iMax and
+        // then take seconds to unwind, which shows up as overshoot + slow oscillation.
+        if (Math.abs(error) < iZone) {
+            integral += error * dtSec;
+        }
+        if (kI != 0.0) {
+            double iLimit = iMax / Math.abs(kI);
+            integral = Range.clip(integral, -iLimit, iLimit);
+        }
         double iTerm = kI * integral;
         iTerm = Range.clip(iTerm, -iMax, iMax);
 
@@ -103,8 +113,8 @@ public double ZiegerZichloas(double targetTicksPerSec, double measuredTicksPerSe
         lastError = error;
         hasLast = true;
 
-        // Feedforward: power needed for target velocity (roughly)
-        double fTerm = kF * targetTicksPerSec;
+        // Feedforward: power needed to hold target velocity = kS (friction) + kF * velocity
+        double fTerm = kS * Math.signum(targetTicksPerSec) + kF * targetTicksPerSec;
 
         double out = (kP * error) + iTerm + dTerm + fTerm;
         return Range.clip(out, outputMin, outputMax);
@@ -112,7 +122,7 @@ public double ZiegerZichloas(double targetTicksPerSec, double measuredTicksPerSe
 
     // position holding
     public double updatePosition(double targetTicks, double measuredTicks, double dtSec) {
-        if (dtSec <= 1e-5) dtSec = 1e-5;
+        if (dtSec <= 1e-5) dtSec = 1e-3;
 
         double error = targetTicks - measuredTicks;
 

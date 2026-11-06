@@ -68,7 +68,7 @@ public class MainTeleop extends LinearOpMode {
     // Launcher encoder/velocity tuning
     private static final double LAUNCHER_TICKS_PER_REV = 28.0;
     // target RPMs (tune these)
-    private static final double TARGET_RPM = 500.0;
+    private static final double TARGET_RPM = 4250.0;
 
     // Battery + launcher velocity compensation
     private static final double NOMINAL_VOLTAGE = 12.0;
@@ -105,13 +105,21 @@ public class MainTeleop extends LinearOpMode {
     private PinpointLocalizer localizer;
     private Pose2d robotPos;
 
-    // tune values
-    private static double LAUNCH_kP = 0.0003;
-    private static double LAUNCH_kI = 0.00007;
-    private static double LAUNCH_kD = 0.00007;
+    // Launcher velocity loop (units: motor power per tick/sec).
+    // Feedforward (kS + kF * target) supplies the power needed to HOLD speed; PID only
+    // corrects what's left. Without feedforward, P has to supply all of it: low kP spins
+    // up slowly and droops, high kP turns into bang-bang oscillation.
+    private static double LAUNCH_kP = 0.002;
+    private static double LAUNCH_kI = 0.001;
+    private static double LAUNCH_kD = 0.0;  // D on a noisy flywheel velocity reading just amplifies noise
 
-    // kF will be computed from motor max speed at init, but you can override if you want:
-    private static double LAUNCH_kF = 0.0; // -1 = auto compute
+    // Run the "Launcher FF Tuner" OpMode and paste its kS/kF here.
+    // kF <= 0 auto-computes 1 / (max ticks/sec) from the configured motor type.
+    private static double LAUNCH_kS = 0.0;
+    private static double LAUNCH_kF = -1.0;
+
+    // Only integrate within this fraction of target so spin-up doesn't wind up the I term
+    private static final double LAUNCH_I_ZONE_FRAC = 0.15;
 
     // Limelight AprilTag detection
     private Limelight3A limelight;
@@ -196,13 +204,20 @@ public class MainTeleop extends LinearOpMode {
 
         baseLauncherPIDF = launcher.getPIDFCoefficients(DcMotorEx.RunMode.RUN_USING_ENCODER);
 
-        // Max ticks/sec = maxRPM * ticksPerRev / 60
-        double maxRpm = launcher.getMotorType().getMaxRPM();
-        double maxTicksPerSec = (maxRpm * launcherTicksPerRev) / 60.0;
-        double kF = LAUNCH_kF;
+        // Encoder ticks/sec the motor actually reaches at full power. This must pair the
+        // configured motor type's max RPM with that SAME type's ticks/rev: for a geared type,
+        // getMaxRPM() is output-shaft RPM, so multiplying it by the bare-motor 28 ticks/rev
+        // made kF ~gear-ratio times too big and pinned the launcher at full power.
+        // Expect roughly 2000-2800 for a 6000 RPM-class motor (kF ~0.0004).
+        double maxTicksPerSec = launcher.getMotorType().getAchieveableMaxTicksPerSecond();
+        double kF = calculateLauncherKF(LAUNCH_kF, maxTicksPerSec);
 
         launcherPIDF = new CustomPIDF(LAUNCH_kP, LAUNCH_kI, LAUNCH_kD, kF);
+        launcherPIDF.kS = LAUNCH_kS;
         launcherPIDF.iMax = 0.35; // clamp integral contribution (power units)
+        // Never drive the flywheel backwards: on overshoot, let it coast down instead of
+        // actively braking it (that braking is what makes it slam back and forth).
+        launcherPIDF.outputMin = 0.0;
         launcherPIDF.reset();
 
         launcherLoopTimer.reset();
@@ -395,6 +410,7 @@ public class MainTeleop extends LinearOpMode {
             telemetry.addData("vel", launcher.getVelocity());
             telemetry.addData("turnPower", aim.getTurnPower());
             telemetry.addData("yawErrorDeg", aim.getYawErrorDeg());
+            telemetry.addData("atSpeed?", launcherAtSpeed(TARGET_RPM));
             telemetry.addData("aimTarget", aim.hasTarget() ? "YES" : "NO");
             telemetry.addData("tagSeen", tagSeen);
             telemetry.addData("tagDistIn", "%.1f", distIn);
@@ -479,6 +495,7 @@ public class MainTeleop extends LinearOpMode {
     private void setLauncherRPM(double rpm) {
         launcherTargetTicksPerSec = rpm * launcherTicksPerRev / 60.0;
         launcherControlEnabled = (rpm > 0.0);
+        launcherPIDF.iZone = LAUNCH_I_ZONE_FRAC * launcherTargetTicksPerSec;
         launcherPIDF.reset();
         launcherLoopTimer.reset();
     }
@@ -512,6 +529,9 @@ public class MainTeleop extends LinearOpMode {
 
         telemetry.addData("L PID", "t=%.0f m=%.0f pwr=%.2f dt=%.3f",
                 target, measured, power, dt);
+        telemetry.addData("L FF", "kS=%.3f kF=%.6f ff=%.2f",
+                launcherPIDF.kS, launcherPIDF.kF,
+                launcherPIDF.kS + launcherPIDF.kF * target);
     }
 
 
