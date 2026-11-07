@@ -12,7 +12,7 @@ public class ChassisAimController {
     public double aimTolDeg = 1.5;
     public long settleMs = 120;
 
-    private boolean frozen;
+    private boolean frozen = true;
     private boolean hasTarget;
     private double targetFieldX;
     private double targetFieldY;

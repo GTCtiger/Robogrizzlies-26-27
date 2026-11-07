@@ -280,7 +280,7 @@ public class MainTeleop extends LinearOpMode {
             }
 
             // 6) Cancel firing immediately for fallback (A)
-            if (aPressed) {
+            if (aPressed && shootState != ShootState.IDLE) {
                 cancelShooting();
             }
 
