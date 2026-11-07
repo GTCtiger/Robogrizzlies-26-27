@@ -40,7 +40,7 @@ public class Auto extends OpMode {
 
     private final Pose startPose = p.of(59, 8.75, 90);
     private final Pose controlPose1 = p.of(24, 70, 0);
-    private final Pose intakePose = p.of(10, 8, 270);
+    private final Pose intakePose = p.of(10, 7.5, 270);
 
     private final Pose controlPose2 = p.of(21, 118, 0);
     private final Pose controlPose3 = p.of(61, 111, 0);
@@ -58,27 +58,35 @@ public class Auto extends OpMode {
     private Path park() {
         return curve(shootPose, controlPose4, parkPose).heading(Interpolator.linear(intakePose, shootPose));
     }
-   private Command launch() {
+   private Command launchSequence() {
         return sequential(
-        instant(() -> launcher.setPower(1)),
+        instant(() -> launcher.setPower(-1)),
         waitMs(500),
         instant(() -> middleIntake.setPower(1)),
         instant(() -> backIntake.setPower(-1)),
-        waitMs(2000),
+        waitMs(5000),
         instant(() -> middleIntake.setPower(0)),
         instant(() -> backIntake.setPower(0)),
         instant(() -> launcher.setPower(0))
         );
     }
 
+    private Command intakeSequence() {
+        return sequential(
+        instant(() -> frontIntake.setPower(-1)),
+        instant(() -> middleIntake.setPower(1))
+        );
+    }
+
     private Command autoRoutine() {
         return sequential(
-        launch(),
-        follow(follower, intake()).with(waitUntil(() -> follower.completion() >= 0.5).then(instant(() -> frontIntake.setPower(-1)))),
+        launchSequence(),
+        follow(follower, intake()).with(waitUntil(() -> follower.completion() >= 0.5).then(intakeSequence())),
         waitMs(2000),
         instant(() -> frontIntake.setPower(0)),
+        instant(() -> middleIntake.setPower(0)),
         follow(follower, shoot()),
-        launch(),
+        launchSequence(),
         follow(follower, park())
         );
     }
