@@ -69,7 +69,7 @@ public class MainTeleop extends LinearOpMode {
     // Launcher encoder/velocity tuning
     private static final double LAUNCHER_TICKS_PER_REV = 28.0;
     // target RPMs (tune these)
-    private static final double TARGET_RPM = 4250.0;
+    private static final double TARGET_RPM = 4600.0;
 
     // Battery + launcher velocity compensation
     private static final double NOMINAL_VOLTAGE = 12.0;
