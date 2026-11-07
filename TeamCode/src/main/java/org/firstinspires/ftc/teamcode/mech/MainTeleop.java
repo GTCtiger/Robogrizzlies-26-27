@@ -1,0 +1,624 @@
+package org.firstinspires.ftc.teamcode.mech;
+
+import com.pedropathing.math.Pose;
+import com.pedropathing.revhub.localizers.PinpointLocalizer;
+import com.qualcomm.hardware.rev.RevColorSensorV3;
+import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
+import com.qualcomm.robotcore.util.ElapsedTime;
+import com.qualcomm.robotcore.hardware.PIDFCoefficients;
+import com.qualcomm.robotcore.hardware.VoltageSensor;
+import com.qualcomm.robotcore.util.Range;
+
+import com.qualcomm.hardware.limelightvision.LLResult;
+import com.qualcomm.hardware.limelightvision.LLResultTypes;
+import com.qualcomm.hardware.limelightvision.Limelight3A;
+import org.firstinspires.ftc.robotcore.external.navigation.Pose3D;
+
+import org.firstinspires.ftc.teamcode.pedro.Constants;
+import org.firstinspires.ftc.teamcode.mech.CV.ColorDetection;
+import org.firstinspires.ftc.teamcode.mech.movement.movement;
+import org.firstinspires.ftc.teamcode.mech.control.CustomPIDF;
+import org.firstinspires.ftc.teamcode.mech.control.ChassisAimController;
+
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Collections;
+
+
+@TeleOp
+public class MainTeleop extends LinearOpMode {
+
+    // Hardware maps
+    private movement drive;
+    private DcMotorEx backIntake, middleIntake, frontIntake, launcher;
+
+    //z Ball tracking
+    private final List<String> ballcols = new ArrayList<>();
+    private final ColorDetection colorSensor = new ColorDetection();
+    private int i = 0;
+// testpush
+    private double Kp;
+    private final ElapsedTime spintime = new ElapsedTime();
+
+    // Button tracking
+    private boolean xPrev = false, yPrev = false, bPrev = false, aPrev = false;
+
+    // Pattern selection
+    private boolean patternChecked = true;  // order sorting disabled
+    private int p = 0;                    // where green should end up (0/1/2)
+    private String patternName = "random";
+    private String stype = "none";
+
+    // Shooter states
+    private enum ShootState { IDLE, START, SPINUP, FIRE, RECOVER }
+    private ShootState shootState = ShootState.IDLE; //initial shootstate
+
+    private final ElapsedTime shootTimer = new ElapsedTime();
+    private int shotIndex = 0;
+
+    // Timing knobs (ms)
+    private static final long FIRST_SPINUP_MS = 2000;
+    private static final long NEXT_SPINUP_MS  = 700;
+    private static final long FIRE_MS         = 1000;
+    private static final long RECOVER_MS      = 1000;
+    // Launcher encoder/velocity tuning
+    private static final double LAUNCHER_TICKS_PER_REV = 28.0;
+    // target RPMs (tune these)
+    private static final double TARGET_RPM = 4250.0;
+
+    // Battery + launcher velocity compensation
+    private static final double NOMINAL_VOLTAGE = 12.0;
+    private PIDFCoefficients baseLauncherPIDF;
+    private double launcherTicksPerRev = 28;
+
+    // "At speed" logic
+    private final ElapsedTime rpmStableTimer = new ElapsedTime();
+    private static final long STABLE_MS = 100;           // must be at speed this long before feeding
+    private static final double RPM_TOL_FRAC = 0.05;     // +/-3% window around target
+
+    // Feeder behavior (intermediate intakes that push a ball into the launcher)
+    private static final double FEED_POWER = 1.0;       // tune (0.6–1.0)
+    private static final long FEED_MS = 3000;
+
+    // when this fraction of target is reached we consider it spun up
+    private static final double VEL_THRESHOLD_FRAC = 0.90;
+
+    // runtime fields
+    private double currentTargetVel = 0.0;
+    boolean rotated = false;
+
+    boolean outtaking = false;
+
+    // launcher velocity control
+    private CustomPIDF launcherPIDF;
+    private final ElapsedTime launcherLoopTimer = new ElapsedTime();
+    private double launcherTargetTicksPerSec = 0.0;
+    private boolean launcherControlEnabled = false;
+
+    // Chassis aiming
+    private ChassisAimController aim;
+
+    private PinpointLocalizer localizer;
+    private Pose robotPos;
+
+    // Launcher velocity loop (units: motor power per tick/sec).
+    // Feedforward (kS + kF * target) supplies the power needed to HOLD speed; PID only
+    // corrects what's left. Without feedforward, P has to supply all of it: low kP spins
+    // up slowly and droops, high kP turns into bang-bang oscillation.
+    private static double LAUNCH_kP = 0.002;
+    private static double LAUNCH_kI = 0.001;
+    private static double LAUNCH_kD = 0.0;  // D on a noisy flywheel velocity reading just amplifies noise
+
+    // Run the "Launcher FF Tuner" OpMode and paste its kS/kF here.
+    // kF <= 0 auto-computes 1 / (max ticks/sec) from the configured motor type.
+    private static double LAUNCH_kS = 0.0;
+    private static double LAUNCH_kF = -1.0;
+
+    // Only integrate within this fraction of target so spin-up doesn't wind up the I term
+    private static final double LAUNCH_I_ZONE_FRAC = 0.15;
+
+    // Limelight AprilTag detection
+    private Limelight3A limelight;
+    private long lastVisionTimestamp = 0;
+
+    // TODO: Measure these offsets
+    private static final double LL_X_IN = 0.0;
+    private static final double LL_Y_IN = 0.0;
+    // Limelight yaw relative to robot forward (radians). Forward-facing = 0.
+    private static final double LL_YAW_RAD = 0;
+    // Limelight tx is typically +right. Robot frame here uses +left.
+    private static final double TX_TO_ROBOT_LEFT_SIGN = -1.0;
+    // Used only when pose range is unavailable for a detected tag.
+    private static final double DEFAULT_TAG_RANGE_IN = 48.0;
+
+    // Last seen tag position in field coordinates (inches)
+    private boolean hasLastTagField = false;
+    private double lastTagFieldX = 0.0;
+    private double lastTagFieldY = 0.0;
+
+
+    // Helpers
+    private static double deadzone(double v, double dz) {
+        return (Math.abs(v) < dz) ? 0 : v;
+    }
+
+
+    private static double angleWrapRad(double a) {
+        while (a > Math.PI) a -= 2.0 * Math.PI;
+        while (a < -Math.PI) a += 2.0 * Math.PI;
+        return a;
+    }
+
+    static double calculateLauncherKF(double configuredKF, double maxTicksPerSec) {
+        return configuredKF > 0.0 ? configuredKF : (maxTicksPerSec > 0.0 ? 1.0 / maxTicksPerSec : 0.0);
+    }
+
+
+    @Override
+    public void runOpMode() {
+        // Init
+        drive = new movement(this, 0, 0, 0);
+
+        launcher = hardwareMap.get(DcMotorEx.class, "launcher");
+        backIntake = hardwareMap.get(DcMotorEx.class, "backIntake");
+        middleIntake = hardwareMap.get(DcMotorEx.class, "middleIntake");
+        frontIntake = hardwareMap.get(DcMotorEx.class, "frontIntake");
+
+
+        launcher.setDirection(DcMotorEx.Direction.REVERSE);
+
+        localizer = new PinpointLocalizer(hardwareMap, Constants.localizerConfig);
+        localizer.setPose(new Pose(0, 0, Math.toRadians(90)));
+
+        aim = new ChassisAimController();
+
+        launcher.setMode(DcMotorEx.RunMode.STOP_AND_RESET_ENCODER);
+
+        launcher.setMode(DcMotorEx.RunMode.RUN_WITHOUT_ENCODER);
+
+        launcher.setZeroPowerBehavior(DcMotorEx.ZeroPowerBehavior.FLOAT);
+
+        // init ball list
+        ballcols.clear();
+        ballcols.add("blank");
+        ballcols.add("blank");
+        ballcols.add("blank");
+
+        spintime.reset();
+        shootTimer.reset();
+        stopShooter();
+
+        telemetry.addLine("Ready");
+        telemetry.update();
+
+        // Limelight init
+        limelight = hardwareMap.get(Limelight3A.class, "limelight");
+        limelight.setPollRateHz(100);
+        limelight.start();
+        limelight.pipelineSwitch(0); // pipeline index
+
+        waitForStart();
+
+        baseLauncherPIDF = launcher.getPIDFCoefficients(DcMotorEx.RunMode.RUN_USING_ENCODER);
+
+        // Encoder ticks/sec the motor actually reaches at full power. This must pair the
+        // configured motor type's max RPM with that SAME type's ticks/rev: for a geared type,
+        // getMaxRPM() is output-shaft RPM, so multiplying it by the bare-motor 28 ticks/rev
+        // made kF ~gear-ratio times too big and pinned the launcher at full power.
+        // Expect roughly 2000-2800 for a 6000 RPM-class motor (kF ~0.0004).
+        double maxTicksPerSec = launcher.getMotorType().getAchieveableMaxTicksPerSecond();
+        double kF = calculateLauncherKF(LAUNCH_kF, maxTicksPerSec);
+
+        launcherPIDF = new CustomPIDF(LAUNCH_kP, LAUNCH_kI, LAUNCH_kD, kF);
+        launcherPIDF.kS = LAUNCH_kS;
+        launcherPIDF.iMax = 0.35; // clamp integral contribution (power units)
+        // Never drive the flywheel backwards: on overshoot, let it coast down instead of
+        // actively braking it (that braking is what makes it slam back and forth).
+        launcherPIDF.outputMin = 0.0;
+        launcherPIDF.reset();
+
+        launcherLoopTimer.reset();
+        launcherControlEnabled = false;
+        launcherTargetTicksPerSec = 0.0;
+
+
+        // main loop
+        while (opModeIsActive()) {
+            // 1) Drive
+            double x = deadzone(gamepad1.left_stick_x, 0.2);   // strafe
+            double y = deadzone(gamepad1.left_stick_y, 0.2);  // forward
+            double h = deadzone(gamepad1.right_stick_x, 0.2);  // turn
+
+            // 2) Edge detection
+            boolean xNow = gamepad1.x;
+            boolean yNow = gamepad1.y;
+            boolean bNow = gamepad1.b;
+            boolean aNow = gamepad1.a;
+
+            boolean xPressed = xNow && !xPrev;
+            boolean yPressed = yNow && !yPrev;
+            boolean bPressed = bNow && !bPrev;
+            boolean aPressed = aNow && !aPrev;
+
+            xPrev = xNow;
+            yPrev = yNow;
+            bPrev = bNow;
+            aPrev = aNow;
+
+
+            // 3) Intake
+            boolean lB = gamepad1.left_bumper;
+            boolean rB = gamepad1.right_bumper;
+
+            if (rB) {
+                frontIntake.setPower(1);
+                if (!outtaking) {
+                    middleIntake.setPower(-1);
+                    backIntake.setPower(1);
+                }
+            } else if (lB) {
+                frontIntake.setPower(-1);
+                if (!outtaking) {
+                    middleIntake.setPower(1);
+                    backIntake.setPower(0);
+                }
+            } else {
+                frontIntake.setPower(0);
+                if (!outtaking) {
+                    middleIntake.setPower(0);
+                    backIntake.setPower(0);
+                }
+            }
+
+            if (spintime.milliseconds() > 100 && rotated) {
+                rotated = false;
+            }
+
+            // 6) Cancel firing immediately for fallback (A)
+            if (aPressed) {
+                cancelShooting();
+            }
+
+            // X toggles chassis aiming; the right stick always overrides it.
+            if (xPressed) aim.setFrozen(!aim.isFrozen());
+
+            // 7) Start firing (Y)
+            if (yPressed && shootState == ShootState.IDLE) {
+                stype = "single";
+                telemetry.update();
+                startShooting();
+            }
+
+            // 8) Update shooter states
+            updateShooting();
+
+            // 9) Update PIDF
+            updateLauncherPIDF();
+
+            // 10) Update localizer
+            localizer.update();
+
+            // 11) Aim the chassis using Limelight tags and Pinpoint odometry.
+            robotPos = localizer.pose();
+
+            boolean tagSeen = false;
+            double yawErrDeg = 0.0; // still used for telemetry
+            double distIn = 0.0;
+            double tagRobotXIn = 0.0;
+            double tagRobotYIn = 0.0;
+
+            LLResult result = (limelight != null) ? limelight.getLatestResult() : null;
+            if (result != null && result.isValid() && result.getStaleness() < 250
+                    && result.getControlHubTimeStamp() > lastVisionTimestamp) {
+                lastVisionTimestamp = result.getControlHubTimeStamp();
+                List<LLResultTypes.FiducialResult> fiducials = result.getFiducialResults();
+                if (fiducials != null) {
+                    for (LLResultTypes.FiducialResult f : fiducials) {
+                        telemetry.addData("detection", f.getFiducialId());
+                        int id = f.getFiducialId();
+                        if (id >= 20) {
+                            yawErrDeg = f.getTargetXDegrees();
+                            boolean havePoseRange = false;
+                            Pose3D tagPoseRobot = f.getTargetPoseRobotSpace();
+                            if (tagPoseRobot != null) {
+                                double xM = tagPoseRobot.getPosition().x;
+                                double yM = tagPoseRobot.getPosition().y;
+                                double zM = tagPoseRobot.getPosition().z;
+                                double distM = Math.sqrt(xM*xM + yM*yM + zM*zM);
+                                distIn = distM * 39.3701;
+                                havePoseRange = distIn > 1.0;
+                                telemetry.addData("apriltagX", xM);
+                                telemetry.addData("apriltagY", yM);
+                                telemetry.addData("apriltagZ", zM);
+                                telemetry.addData("yawErr", yawErrDeg);
+                            }
+
+                            if (!havePoseRange) {
+                                distIn = DEFAULT_TAG_RANGE_IN;
+                            }
+
+                            // Build robot-relative target using tx bearing and range.
+                            double bearingCamRad = Math.toRadians(TX_TO_ROBOT_LEFT_SIGN * yawErrDeg);
+                            double tagCamX = distIn * Math.cos(bearingCamRad); // forward from camera
+                            double tagCamY = distIn * Math.sin(bearingCamRad); // left from camera
+
+                            double c = Math.cos(LL_YAW_RAD);
+                            double s = Math.sin(LL_YAW_RAD);
+                            tagRobotXIn = LL_X_IN + (tagCamX * c - tagCamY * s);
+                            tagRobotYIn = LL_Y_IN + (tagCamX * s + tagCamY * c);
+
+                            // Save absolute field location for continued tracking after tag loss.
+                            // Even if distance is fallback-estimated, this keeps "perma tracking"
+                            // behavior alive after first sighting.
+                            double rh = robotPos.heading();
+                            double ch = Math.cos(rh);
+                            double sh = Math.sin(rh);
+                            lastTagFieldX = robotPos.x() + (tagRobotXIn * ch - tagRobotYIn * sh);
+                            lastTagFieldY = robotPos.y() + (tagRobotXIn * sh + tagRobotYIn * ch);
+                            hasLastTagField = true;
+
+                            tagSeen = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (aim != null) {
+                boolean memoryTrackingActive = false;
+                if (tagSeen) {
+                    aim.updateVisionMeasurement(tagRobotXIn, tagRobotYIn, true, robotPos);
+                } else if (hasLastTagField) {
+                    // Field -> robot transform (x forward, y left).
+                    double dx = lastTagFieldX - robotPos.x();
+                    double dy = lastTagFieldY - robotPos.y();
+                    double rh = robotPos.heading();
+                    double ch = Math.cos(rh);
+                    double sh = Math.sin(rh);
+                    double targetRobotX =  dx * ch + dy * sh;
+                    double targetRobotY = -dx * sh + dy * ch;
+                    aim.setTargetRobotRelative(targetRobotX, targetRobotY, robotPos);
+                    memoryTrackingActive = true;
+                } else {
+                    // No vision and nothing remembered
+                    aim.updateVisionMeasurement(0.0, 0.0, false, robotPos);
+                }
+
+                double turn = aim.update(robotPos);
+                // movement reverses the opposite motor side from PedroPathing's drivetrain.
+                drive.move(x, y, h != 0.0 ? h : -turn);
+                telemetry.addData("trackMode", tagSeen ? "VISION" : (memoryTrackingActive ? "MEMORY" : "NONE"));
+                telemetry.addData("aimFrozen", aim.isFrozen() ? "YES" : "NO");
+            }
+
+            telemetry.addData("tagMemory", hasLastTagField ? "YES" : "NO");
+            if (hasLastTagField) {
+                telemetry.addData("lastTagField", "x=%.1f y=%.1f", lastTagFieldX, lastTagFieldY);
+            }
+            // Telemetry updates
+            telemetry.addData("drive", "x=%.2f y=%.2f h=%.2f", x, y, h);
+            telemetry.addData("pattern", patternName);
+            telemetry.addData("colors", ballcols);
+            telemetry.addData("i", i);
+            telemetry.addData("shootState", shootState);
+            telemetry.addData("shotIndex", shotIndex);
+            telemetry.addData("typeofshot", stype);
+            telemetry.addData("pos", launcher.getCurrentPosition());
+            telemetry.addData("vel", launcher.getVelocity());
+            telemetry.addData("turnPower", aim.getTurnPower());
+            telemetry.addData("yawErrorDeg", aim.getYawErrorDeg());
+            telemetry.addData("atSpeed?", launcherAtSpeed(TARGET_RPM));
+            telemetry.addData("aimTarget", aim.hasTarget() ? "YES" : "NO");
+            telemetry.addData("tagSeen", tagSeen);
+            telemetry.addData("tagDistIn", "%.1f", distIn);
+            telemetry.addData("distance", distIn);
+            telemetry.update();
+
+            idle();
+        }
+    }
+
+    // Builds the order array,
+    // fallback to [0,1,2]
+    private int[] computeShotOrder(List<String> ballcols, int p) {
+        // Default fallback
+        int[] fallback = new int[] {0, 1, 2};
+
+        List<Integer> poslist = new ArrayList<>();
+        poslist.add(0); poslist.add(0); poslist.add(0);
+
+        boolean greenFound = false;
+        int purple = 0;
+
+        for (int j = 0; j < 3; j++) {
+            String color = ballcols.get(j);
+
+            if ("green".equals(color) && !greenFound) {
+                poslist.set(p, j);
+                poslist.set((p + 1) % 3, (j + 1) % 3);
+                poslist.set((p + 2) % 3, (j + 2) % 3);
+                greenFound = true;
+                break;
+            } else if (("green".equals(color) && greenFound)) {
+                // randomizer condition
+                return fallback;
+            } else if ("purple".equals(color)) {
+                purple++;
+                if (purple > 2) return fallback; // reject 3 purples
+            } else {
+                return fallback; // unknown color string
+            }
+        }
+        if (!greenFound) return fallback;
+        // Convert to int[]
+        int[] order = new int[3];
+        for (int k = 0; k < 3; k++) order[k] = poslist.get(k);
+        return order;
+    }
+
+    // Shooting States
+    private void startShooting() {
+        shotIndex = 0;
+
+        // kick off
+        shootState = ShootState.START;
+        shootTimer.reset();
+    }
+
+    private void cancelShooting() {
+        shootState = ShootState.IDLE;
+        shotIndex = 0;
+        stopShooter();
+    }
+
+    private double batteryVoltage() {
+        double minV = 99.0;
+        for (VoltageSensor vs : hardwareMap.voltageSensor) {
+            double v = vs.getVoltage();
+            if (v > 0) minV = Math.min(minV, v);
+        }
+        return (minV < 99.0) ? minV : NOMINAL_VOLTAGE;
+    }
+
+    // Compensate launcher F term so velocity loop behaves similarly as voltage changes
+    private void applyLauncherVoltageCompToF() {
+        double scale = NOMINAL_VOLTAGE / batteryVoltage();
+        launcher.setPIDFCoefficients(
+                DcMotorEx.RunMode.RUN_USING_ENCODER,
+                new PIDFCoefficients(baseLauncherPIDF.p, baseLauncherPIDF.i, baseLauncherPIDF.d, baseLauncherPIDF.f * scale)
+        );
+    }
+
+    private void setLauncherRPM(double rpm) {
+        launcherTargetTicksPerSec = rpm * launcherTicksPerRev / 60.0;
+        launcherControlEnabled = (rpm > 0.0);
+        launcherPIDF.iZone = LAUNCH_I_ZONE_FRAC * launcherTargetTicksPerSec;
+        launcherPIDF.reset();
+        launcherLoopTimer.reset();
+    }
+
+
+    private double getLauncherRPM() {
+        return launcher.getVelocity() / launcherTicksPerRev * 60.0;
+    }
+
+    private boolean launcherAtSpeed(double targetRpm) {
+        double rpm = getLauncherRPM();
+        double err = Math.abs(rpm - targetRpm);
+        return err <= (RPM_TOL_FRAC * targetRpm);
+    }
+    private void updateLauncherPIDF() {
+        if (!launcherControlEnabled) return;
+
+        double dt = launcherLoopTimer.seconds();
+        launcherLoopTimer.reset();
+
+        double measured = launcher.getVelocity(); // ticks/sec
+        double target = launcherTargetTicksPerSec;
+
+        double power = launcherPIDF.update(target, measured, dt);
+
+        // Optional: voltage compensation (helps keep behavior consistent)
+        double scale = NOMINAL_VOLTAGE / batteryVoltage();
+        power = Range.clip(power * scale, -1.0, 1.0);
+
+        launcher.setPower(power);
+
+        telemetry.addData("L PID", "t=%.0f m=%.0f pwr=%.2f dt=%.3f",
+                target, measured, power, dt);
+        telemetry.addData("L FF", "kS=%.3f kF=%.6f ff=%.2f",
+                launcherPIDF.kS, launcherPIDF.kF,
+                launcherPIDF.kS + launcherPIDF.kF * target);
+    }
+
+
+    private void updateShooting() {
+        switch (shootState) {
+            case IDLE:
+                outtaking = false;
+                return;
+
+            case START: {
+                outtaking = true;
+
+                // Single-shot: always use the "first shot" RPM
+                setLauncherRPM(TARGET_RPM);
+
+                rpmStableTimer.reset();
+                shootTimer.reset();
+                shootState = ShootState.SPINUP;
+                break;
+            }
+
+            case SPINUP: {
+                double targetRpm = TARGET_RPM;
+                long needed = FIRST_SPINUP_MS;
+
+                boolean atSpeed = launcherAtSpeed(targetRpm);
+
+                if (!atSpeed) {
+                    rpmStableTimer.reset(); // must be continuously stable
+                }
+
+                boolean stableEnough = atSpeed && rpmStableTimer.milliseconds() >= STABLE_MS;
+                boolean timedOut = shootTimer.milliseconds() >= needed;
+
+                if (stableEnough || timedOut) {
+                    // Feed one ball into the launcher
+                    backIntake.setPower(-FEED_POWER);
+                    middleIntake.setPower(FEED_POWER);
+
+                    shootTimer.reset();
+                    shootState = ShootState.FIRE;
+                }
+
+                telemetry.addData("launcherRPM", "%.0f / %.0f", getLauncherRPM(), targetRpm);
+                telemetry.addData("stableMs", "%.0f", rpmStableTimer.milliseconds());
+                break;
+            }
+
+
+            case FIRE: {
+                if (shootTimer.milliseconds() >= FEED_MS) {
+                    backIntake.setPower(0);
+                    middleIntake.setPower(0);
+
+                    shootTimer.reset();
+                    shootState = ShootState.RECOVER;
+                }
+                break;
+            }
+
+
+            case RECOVER: {
+                double targetRpm = TARGET_RPM;
+
+                // Prefer RPM recovery; also keep a minimum delay
+                boolean recovered = launcherAtSpeed(targetRpm);
+                if ((shootTimer.milliseconds() >= RECOVER_MS) || recovered) {
+                    // Single-shot: end the cycle
+                    shootState = ShootState.IDLE;
+                    shotIndex = 0;
+                    stopShooter();
+                    outtaking = false;
+                }
+                break;
+            }
+
+        }
+    }
+
+    private void stopShooter() {
+        launcherControlEnabled = false;
+        launcherTargetTicksPerSec = 0.0;
+        launcher.setPower(0.0);
+        backIntake.setPower(0.0);
+        middleIntake.setPower(0.0);
+    }
+
+}

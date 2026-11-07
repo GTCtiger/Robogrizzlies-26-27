@@ -16,6 +16,8 @@ import com.qualcomm.robotcore.hardware.HardwareMap;
 
 import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 
+import java.util.OptionalDouble;
+
 public class Constants {
     public static MecanumConfig drivetrainConfig = new MecanumConfig(c -> {
         c.frontLeftName.set("FL");
@@ -30,7 +32,8 @@ public class Constants {
 
     public static PinpointConfig localizerConfig = new PinpointConfig(c -> {
         c.name.set("pinpoint");
-        c.podType.set(GoBildaPinpointDriver.GoBildaOdometryPods.goBILDA_4_BAR_POD);
+        c.ticksPerUnit.set(OptionalDouble.of(1.0 / 0.00199746322));
+        c.encoderResolutionUnit.set(DistanceUnit.INCH);
         c.xPodOffset.set(5.549877497154897);
         c.yPodOffset.set(-1.4479571064626138);
         c.xPodDirection.set(GoBildaPinpointDriver.EncoderDirection.FORWARD);
