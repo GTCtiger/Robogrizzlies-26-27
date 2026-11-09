@@ -9,27 +9,22 @@ public class launcherSolver
     private final double vdtl = 5;
 
     public double pollenAngle(double thd, double tvd) {
-        return Math.atan(
-                (tvd + pRad + vdtl) / (thd + hdtl)
-                        + 0.5 * 981 * (thd + hdtl) / (optiv * optiv)
+        return Math.atan((tvd + pRad + vdtl) / (thd + hdtl) + 0.5 * 981 * (thd + hdtl) / (optiv * optiv)
         );
     }
 
     public double nectarAngle(double thd, double tvd) {
         return Math.atan(
-                (tvd + nRad + vdtl) / (thd + hdtl)
-                        + 0.5 * 981 * (thd + hdtl) / (optiv * optiv)
+                (tvd + nRad + vdtl) / (thd + hdtl) + 0.5 * 981 * (thd + hdtl) / (optiv * optiv)
         );
     }
 
     public double pollenRPM(double thd, double tvd) {
-        return 60 * optiv /
-                (2 * Math.PI * flywheel * Math.cos(pollenAngle(thd, tvd)));
+        return 60 * optiv / (2 * Math.PI * flywheel * Math.cos(pollenAngle(thd, tvd)));
     }
 
     public double nectarRPM(double thd, double tvd) {
-        return 60 * optiv /
-                (2 * Math.PI * flywheel * Math.cos(nectarAngle(thd, tvd)));
+        return 60 * optiv / (2 * Math.PI * flywheel * Math.cos(nectarAngle(thd, tvd)));
     }
 
 }
