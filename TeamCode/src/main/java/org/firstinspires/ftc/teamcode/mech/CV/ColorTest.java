@@ -50,7 +50,7 @@ public class ColorTest extends LinearOpMode {
     @Override public void runOpMode() {
         color = hardwareMap.get(RevColorSensorV3.class, "colorSensor");
         color.enableLed(true);
-        String color_value = "Undef";
+        String color_value;
 
         waitForStart();
 
@@ -64,7 +64,7 @@ public class ColorTest extends LinearOpMode {
                 telemetry.addData("Color", color_value);
             }
             else {
-
+                telemetry.addData("Color", "cant see no color");
             }
 
             telemetry.addData("Color", "idkrn");
