@@ -259,7 +259,7 @@ public class MainTeleop extends LinearOpMode {
                 frontIntake.setPower(1);
                 if (!outtaking) {
                     middleIntake.setPower(-1);
-                    backIntake.setPower(1);
+                    backIntake.setPower(-1);
                 }
             } else if (lB) {
                 frontIntake.setPower(-1);
@@ -570,7 +570,7 @@ public class MainTeleop extends LinearOpMode {
 
                 if (stableEnough || timedOut) {
                     // Feed one ball into the launcher
-                    backIntake.setPower(-FEED_POWER);
+                    backIntake.setPower(FEED_POWER);
                     middleIntake.setPower(FEED_POWER);
 
                     shootTimer.reset();
